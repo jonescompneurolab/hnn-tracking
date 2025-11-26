@@ -36,7 +36,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python download_prs.py
+          python issues_metrics/download_prs.py
 
       - name: Commit updated data
         run: |
