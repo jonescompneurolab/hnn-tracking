@@ -281,3 +281,13 @@ if __name__ == "__main__":
     )
 
     prs_data.to_pickle(DATAPATH)
+
+    from prs_analysis import run_report
+
+    run_report(
+        manual_date=False,
+        display_tables=False,
+        style_displayed_tables=False,
+        save_report_data=True,
+        overwrite_historical_data=False,
+    )
