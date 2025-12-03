@@ -1,8 +1,9 @@
 # %% ----------------------------------------
-# download_prs.py
+# download_issues.py
 
 import os
 import pickle
+import sys
 import time
 import warnings
 from datetime import date, datetime, timedelta
@@ -11,7 +12,6 @@ import pandas as pd
 import requests
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"}  # for GitHub Action
 # HEADERS = {"Authorization": f"token {GITHUB_TOKEN}"}  # for local testing
 
@@ -19,14 +19,12 @@ OWNER = "jonescompneurolab"
 REPO = "hnn-core"
 DATAPATH = os.path.join(
     "issues_metrics",
-    "raw_prs_data.pkl",
+    "raw_issues_data.pkl",
 )
 
 if not GITHUB_TOKEN:
-    raise RuntimeError("GITHUB_TOKEN environment variable is not set.")
-
-# %% ----------------------------------------
-
+    print("Error: GITHUB_TOKEN environment variable is not set.")
+    sys.exit(1)
 
 def get_start_end_dates(
     df,
@@ -34,10 +32,10 @@ def get_start_end_dates(
     manual_end=False,
 ):
     """
-    Determine START_DATE and END_DATE based on the historical PR
+    Determine START_DATE and END_DATE based on the historical issue
     data
 
-    START_DATE should be the oldest unresolved PR date in the historical data (to
+    START_DATE should be the oldest unresolved issue date in the historical data (to
     minimize the number of API calls needed).
 
     END_DATE should be the day before the GitHub Action is run
@@ -55,15 +53,15 @@ def get_start_end_dates(
         # -------------------- #
         # This is just placeholder code for now
         #
-        # Below, I'm using the most recently "opened" PR in
+        # Below, I'm using the most recently "opened" issue in
         # the historical data as the start date, though this
         # is not what we actually want to do in practice, as
-        # PRs will continue to accrue activity over time
+        # issues will continue to accrue activity over time
         # and their status may change, which we need to keep
         # track of.
         #
         # We would ideally want to make the starting point
-        # the oldest "unresolved" PR, which we would need
+        # the oldest "unresolved" issue, which we would need
         # some logic from the analysis script to figure out
         START_DATE = df["date_opened"].max()
 
@@ -86,10 +84,7 @@ def safe_request(url):
     Make a get request to the GitHub API, with handling for rate limits
     """
     try:
-        resp = requests.get(
-            url,
-            headers=HEADERS,
-        )
+        resp = requests.get(url, headers=HEADERS)
         if (
             resp.status_code == 403
             and "X-RateLimit-Remaining" in resp.headers
@@ -106,49 +101,54 @@ def safe_request(url):
         raise RuntimeError(f"Request to {url} failed: {e}")
 
 
-def get_pull_requests(START_DATE, END_DATE):
-    """
-    Get pull requests created between START_DATE and END_DATE
-    """
-    prs = []
+def get_issues(START_DATE, END_DATE):
+    issues = []
     page = 1
     while True:
-        url = f"https://api.github.com/repos/{OWNER}/{REPO}/pulls?state=all&per_page=100&page={page}"
+        url = f"https://api.github.com/repos/{OWNER}/{REPO}/issues?state=all&per_page=100&page={page}"
         resp = safe_request(url)
         data = resp.json()
         if not data:
             break
-        for pr in data:
-            created = datetime.strptime(pr["created_at"], "%Y-%m-%dT%H:%M:%SZ").date()
+        for issue in data:
+            # skip pull requests
+            if "pull_request" in issue:
+                continue
+            created = datetime.strptime(
+                issue["created_at"],
+                "%Y-%m-%dT%H:%M:%SZ"
+            ).date()
             if START_DATE <= created <= END_DATE:
-                prs.append(
+                issues.append(
                     {
-                        "number": pr["number"],
-                        "title": pr["title"],
-                        "created_at": pr["created_at"],
-                        "html_url": pr["html_url"],
-                        "user": pr["user"]["login"],
-                        "state": pr["state"],
-                        "closed_at": pr.get("closed_at", ""),
-                        "merged_at": pr.get("merged_at", ""),
+                        "number": issue["number"],
+                        "title": issue["title"],
+                        "created_at": issue["created_at"],
+                        "html_url": issue["html_url"],
+                        "user": issue["user"]["login"],
+                        "comments_url": issue["comments_url"],
+                        "closed_at": issue.get("closed_at"),
+                        "closed_by": issue.get("closed_by", {}).get("login")
+                        if issue.get("closed_by") else "",
+                        "labels": [label["name"] for label in issue.get("labels", [])],
+                        "milestone": issue.get("milestone", {}).get("title")
+                        if issue.get("milestone")
+                        else "",
                     }
                 )
         page += 1
         time.sleep(0.5)
-    return prs
+    return issues
 
 
-def get_review_comments(
-    pr_number,
+def get_comments(
+    comments_url,
     max_comments=5,
 ):
-    """
-    Get review comments for a given PR
-    """
     comments = []
     page = 1
     while len(comments) < max_comments:
-        url = f"https://api.github.com/repos/{OWNER}/{REPO}/pulls/{pr_number}/comments?per_page=100&page={page}"
+        url = f"{comments_url}?per_page=100&page={page}"
         resp = safe_request(url)
         data = resp.json()
         if not data:
@@ -168,54 +168,55 @@ def get_review_comments(
     return comments
 
 
-def get_prs_with_comments(
-    rerun_all=False,
-    max_comments=5,
-    manual_end=False,
+def get_issues_with_comments(
+        rerun_all=False,
+        max_comments=5,
+        manual_end=False,
 ):
-    """
-    Get pull requests with specified number of comments
-    """
 
     if rerun_all:
         print(
             "The 'rerun_all' flag is enabled. All historical data \n"
-            "will be fetched and the 'raw_prs_data.pkl' file will \n"
+            "will be fetched and the 'raw_issues_data.pkl' file will \n"
             "be entirely overwritten."
         )
 
     if os.path.exists(DATAPATH):
         with open(DATAPATH, "rb") as f:
-            hist_prs_data = pickle.load(f)
+            hist_issues_data = pickle.load(f)
     else:
-        hist_prs_data = None
+        hist_issues_data = None
         rerun_all = True
 
     START_DATE, END_DATE = get_start_end_dates(
-        hist_prs_data,
+        hist_issues_data,
         rerun_all=rerun_all,
         manual_end=manual_end,
     )
 
     print(f"Fetching data between {START_DATE} and {END_DATE}")
 
-    prs = get_pull_requests(START_DATE, END_DATE)
+    issues = get_issues(START_DATE, END_DATE)
     rows = []
 
-    for pr in prs:
-        comments = get_review_comments(pr["number"], max_comments=max_comments)
+    for issue in issues:
+        comments = get_comments(
+            issue["comments_url"],
+            max_comments=max_comments,
+        )
         if comments:
             for c in comments:
                 rows.append(
                     [
-                        pr["number"],
-                        pr["created_at"],
-                        pr["user"],
-                        pr["title"],
-                        pr["html_url"],
-                        pr["state"],
-                        pr["closed_at"],
-                        pr["merged_at"],
+                        issue["number"],
+                        issue["created_at"],
+                        issue["user"],
+                        issue["title"],
+                        issue["html_url"],
+                        issue["closed_at"] or "",
+                        issue["closed_by"],
+                        ", ".join(issue["labels"]),
+                        issue["milestone"],
                         c["user"],
                         c["created_at"],
                         c["body"].replace("\n", " ").strip(),
@@ -224,29 +225,30 @@ def get_prs_with_comments(
         else:
             rows.append(
                 [
-                    pr["number"],
-                    pr["created_at"],
-                    pr["user"],
-                    pr["title"],
-                    pr["html_url"],
-                    pr["state"],
-                    pr["closed_at"],
-                    pr["merged_at"],
+                    issue["number"],
+                    issue["created_at"],
+                    issue["user"],
+                    issue["title"],
+                    issue["html_url"],
+                    issue["closed_at"] or "",
+                    issue["closed_by"],
+                    ", ".join(issue["labels"]),
+                    issue["milestone"],
                     "",
                     "",
                     "",
                 ]
             )
-
     columns = [
         "number",
         "date_time",
         "username",
-        "pr_title",
-        "pr_url",
-        "state",
+        "issue_name",
+        "issue_url",
         "date_closed",
-        "date_merged",
+        "closed_by",
+        "labels",
+        "milestone",
         "comment_username",
         "comment_date",
         "comment_contents",
@@ -256,16 +258,19 @@ def get_prs_with_comments(
         rows,
         columns=columns,
     )
-    df["date_opened"] = pd.to_datetime(df["date_time"]).dt.date
 
-    print(f"Fetched and updated {len(df['number'].unique())} unique PRs.")
+    df["date_opened"] = pd.to_datetime(
+        df["date_time"]
+    ).dt.date
+
+    print(f"Fetched and updated {len(df['number'].unique())} unique issues.")
 
     # append historical data to df if not re-running everything
-    if (rerun_all is False) and (isinstance(hist_prs_data, pd.DataFrame)):
+    if (rerun_all is False) and (isinstance(hist_issues_data, pd.DataFrame)):
         # get historical data before the start date, as everything
         # on or after start date has been fetched anew
-        hist_data_retained = hist_prs_data.loc[
-            hist_prs_data["date_opened"] < START_DATE
+        hist_data_retained = hist_issues_data.loc[
+            hist_issues_data["date_opened"] < START_DATE
         ].copy()
 
         df = pd.concat(
@@ -292,10 +297,12 @@ if __name__ == "__main__":
         manual_end = "2025-12-01"
     # --> [END DEV]
 
-    prs_data = get_prs_with_comments(
+    issues_data = get_issues_with_comments(
         rerun_all=True,
         max_comments=5,
         manual_end=manual_end,
     )
 
-    prs_data.to_pickle(DATAPATH)
+    issues_data.to_pickle(DATAPATH)
+
+# %%

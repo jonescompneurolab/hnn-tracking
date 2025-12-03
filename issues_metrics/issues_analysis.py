@@ -1,5 +1,7 @@
-# %% -------------------------------------
-# prs_analysis.py
+# %% ----------------------------------------
+# -------------------------------------------
+
+# issues_analysis.py
 
 import os
 import pickle
@@ -9,28 +11,21 @@ import pandas as pd
 from IPython.display import HTML, display
 from pandas.tseries.holiday import USFederalHolidayCalendar
 
-DATAPATH = os.path.join(
-    "issues_metrics",
-    "raw_prs_data.pkl",
-)
+DATAPATH = os.path.join("issues_metrics", "raw_issues_data.pkl")
 
 REPORTPATH = os.path.join(
     "issues_metrics",
-    "prs_report.pkl",
+    "issues_report.pkl",
 )
+
+# %% ----------------------------------------
+# -------------------------------------------
 
 
 # function to style html tables
 # ------------------------------
 def render_html_table(df):
-    display(
-        HTML(
-            df.to_html(
-                classes="wrapped-table",
-                index=False,
-            )
-        )
-    )
+    display(HTML(df.to_html(classes="wrapped-table", index=False)))
     display(
         HTML("""
     <style>
@@ -56,9 +51,9 @@ def peek(df, n=1):
     return out
 
 
-# %% -------------------------------------
+# %% ----------------------------------------
 # Preprocessing
-# ----------------------------------------
+# -------------------------------------------
 
 
 def process_datetime(df, date_cols):
@@ -67,24 +62,43 @@ def process_datetime(df, date_cols):
             name = col.replace("date_time", "datetime_opened")
         else:
             name = col.replace("date", "datetime")
-        df[name] = pd.to_datetime(df[col], utc=True)
+
+        df[name] = pd.to_datetime(
+            df[col],
+            utc=True,
+        )
         df[name] = df[name].dt.tz_convert("US/Eastern")
         df[name] = df[name].dt.tz_localize(None)
-        df[col] = pd.to_datetime(df[name]).dt.date
+        df[col] = df[name].dt.date
+
+    # use timezone-corrected datetime_opened for date_opened
+    df["date_opened"] = df["datetime_opened"].dt.date
 
     return df
 
 
-def preprocess(df, dev_usernames):
+def preprocess(
+    df,
+    dev_usernames,
+    start_date=False,
+    end_date=False,
+):
     df = process_datetime(
         df,
         [
-            "date_time",
-            "date_closed",
-            "date_merged",
-            "comment_date",
+            "date_time",  # -> datetime_opened
+            "date_closed",  # + datetime_closed
+            "comment_date",  # + comment_datetime
         ],
     )
+
+    # filter on start_date
+    # ------------------------------
+    if isinstance(pd.to_datetime(start_date), pd.Timestamp):
+        df = df.loc[
+            df["date_opened"] >= pd.to_datetime(start_date).date()
+        ]
+
 
     def assign_dev(row):
         if row in dev_usernames:
@@ -94,22 +108,79 @@ def preprocess(df, dev_usernames):
 
     df["opened_by"] = df["username"].apply(lambda x: assign_dev(x))
 
+    # drop rows where username is
+    # "github-actions[bot]"
+    # ------------------------------
+    df = df[df["username"] != "github-actions[bot]"]
+    df = df.reset_index(drop=True)
+
+    # adjust report for the specified "end_date",
+    # removing any dates after "end_date"
+    # ------------------------------
+    if isinstance(pd.to_datetime(end_date), pd.Timestamp):
+        end_date = pd.to_datetime(end_date).date()
+
+        # remove issues opened after end_date
+        # ------------------------------
+        # - get issues numbers
+        issues_to_remove = df.loc[df["date_opened"] >= end_date]["number"].unique()
+
+        # - remove issues based on number
+        df = df.loc[~df["number"].isin(issues_to_remove)].reset_index(drop=True)
+
+        # clear fields for issues closed
+        # after the end_date
+        # ------------------------------
+
+        invalid_dateclosed = df.loc[
+            pd.to_datetime(df["datetime_closed"]).dt.date >= end_date
+        ]["number"].unique()
+
+        for issue_num in invalid_dateclosed:
+            # set date_closed and datetime_closed to NaT
+            df.loc[
+                df["number"] == issue_num,
+                ["date_closed", "datetime_closed"],
+            ] = pd.NaT
+            # set closed_by to ""
+            df.loc[
+                df["number"] == issue_num,
+                "closed_by",
+            ] = ""
+
+        # clear fields for *only* the
+        # comments made after the end_date
+        # ------------------------------
+        invalid_commentdate = pd.to_datetime(df["comment_datetime"]).dt.date >= end_date
+
+        # set comment_date and comment_datetime to NaT
+        # set comment_username and comment_contents to ""
+        df.loc[
+            invalid_commentdate,
+            [
+                "comment_date",
+                "comment_datetime",
+                "comment_username",
+                "comment_contents",
+            ],
+        ] = [pd.NaT, pd.NaT, "", ""]
+
     # order columns
     # ------------------------------
     df = df[
         [
             "number",
+            # "labels",
+            # "milestone",
             "date_opened",
             "datetime_opened",
             "opened_by",
             "username",
-            "pr_title",
-            "pr_url",
-            "state",
+            "issue_name",
+            "issue_url",
             "date_closed",
             "datetime_closed",
-            "date_merged",
-            "datetime_merged",
+            "closed_by",
             "comment_date",
             "comment_datetime",
             "comment_username",
@@ -120,72 +191,98 @@ def preprocess(df, dev_usernames):
     return df
 
 
-# %% -------------------------------------
-# number of prs by by username
-# ----------------------------------------
+# %% ----------------------------------------
+# -------------------------------------------
 
 
-def prs_opened_by_users(
+# number of issues by by username
+# ------------------------------
+def issues_by_user(
     df,
-    by_dev_status=False,
     show=True,
     return_df=False,
 ):
-    if by_dev_status:
-        by_col = "opened_by"
-    else:
-        by_col = "username"
+    issues_by_user = df[
+        [
+            "issue_name",
+            "date_opened",
+            "username",
+        ]
+    ].drop_duplicates()
 
-    prs_by_user = df[["pr_title", "date_opened", by_col]].drop_duplicates()
-    prs_by_user = prs_by_user.groupby(by_col).count().reset_index()
-    prs_by_user = prs_by_user[[by_col, "pr_title"]].rename(
-        columns={"pr_title": "prs_opened"}
+    issues_by_user = issues_by_user.groupby("username").count().reset_index()
+
+    issues_by_user = issues_by_user[
+        [
+            "username",
+            "issue_name",
+        ]
+    ].rename(
+        columns={
+            "issue_name": "issues_opened",
+        }
     )
 
-    table = pd.concat(
-        [
-            prs_by_user,
-            pd.DataFrame(
-                {by_col: ["Total"], "prs_opened": [prs_by_user["prs_opened"].sum()]}
-            ),
-        ]
-    ).reset_index(drop=True)
-
     if show:
-        display(table)
+        display(
+            pd.concat(
+                [
+                    issues_by_user,
+                    pd.DataFrame(
+                        {
+                            "username": ["Total"],
+                            "issues_opened": [issues_by_user["issues_opened"].sum()],
+                        }
+                    ),
+                ]
+            ).reset_index(drop=True)
+        )
 
     if return_df:
-        return prs_by_user
+        return issues_by_user
 
-    return table
+    return
 
+
+# issues_by_user(df)
 
 # %% -------------------------------------
-# Get PRs closed / merged
+# Get issues closed / merged
 # ----------------------------------------
 
 
-def pr_status_counts(
+def issue_status_counts(
     data,
 ):
     df = data.copy()
-    df = df[["number", "date_closed", "date_merged",]]
+    df = df[
+        [
+            "number",
+            "date_closed",
+        ]
+    ]
     df = df.drop_duplicates().reset_index(drop=True)
 
     total = len(df["number"])
+    closed_issues = df["date_closed"].notna().sum()
+    outstanding_issues = total - closed_issues
 
     table = pd.DataFrame(
         {
-            "PR Status": ["Opened", "Closed", "Merged"],
+            "Issue Status": [
+                "New Issues",
+                "Outstanding Issues",
+                "Closed Issues",
+            ],
             "Count": [
                 total,
-                df["date_closed"].notna().sum(),
-                df["date_merged"].notna().sum(),
+                outstanding_issues,
+                closed_issues,
             ],
             "Percent": [
                 100,
-                round(df["date_closed"].notna().sum() / total * 100, 2),
-                round(df["date_merged"].notna().sum() / total * 100, 2),
+                round(outstanding_issues / total * 100, 2),
+                round(closed_issues / total * 100, 2),
             ],
         }
     )
@@ -194,20 +291,82 @@ def pr_status_counts(
 
 
 # %% -------------------------------------
-# Get Time To Response Metric
+# Get issues opened by users
 # ----------------------------------------
 
 
-def process_prs_for_ttr(df, report_date_est):
-    # unique non-bot prs
-    # ------------------------------
-    unique_prs = df.drop_duplicates(["number", "date_opened", "username"])
+def issues_opened_by_users(
+    df,
+    by_dev_status=False,
+    return_df=False,
+):
+    if by_dev_status:
+        by_col = "opened_by"
+    else:
+        by_col = "username"
 
-    # prs w/o comments
+    issues_by_user = df[
+        [
+            "issue_name",
+            "date_opened",
+            by_col,
+        ]
+    ].drop_duplicates()
+
+    issues_by_user = issues_by_user.groupby(by_col).count().reset_index()
+    issues_by_user = issues_by_user[
+        [
+            by_col,
+            "issue_name",
+        ]
+    ].rename(
+        columns={
+            "issue_name": "issues_opened",
+        }
+    )
+
+    table = pd.concat(
+        [
+            issues_by_user,
+            pd.DataFrame(
+                {
+                    by_col: ["Total"],
+                    "issues_opened": [issues_by_user["issues_opened"].sum()],
+                }
+            ),
+        ]
+    ).reset_index(drop=True)
+
+    if return_df:
+        return issues_by_user
+
+    return table
+
+
+# %% -------------------------------------
+# Get Time to Response Metric
+# ----------------------------------------
+
+
+def process_issues_for_ttr(
+    df,
+    report_date,
+):
+    # unique non-bot issues
+    # ------------------------------
+    unique_issues = df.drop_duplicates(
+        [
+            "issue_name",
+            "date_opened",
+            "username",
+        ]
+    )
+
+    # issues w/o comments
     # ------------------------------
     no_response = (
-        unique_prs[
-            unique_prs["comment_datetime"].apply(
+        unique_issues[
+            unique_issues["comment_datetime"].apply(
                 lambda x: not isinstance(
                     x,
                     pd.Timestamp,
@@ -217,13 +376,14 @@ def process_prs_for_ttr(df, report_date_est):
         .reset_index(drop=True)
         .copy()
     )
+
     no_response["status"] = "no response"
 
     # get issues w/ comments
     # ------------------------------
     with_response = (
-        unique_prs[
-            unique_prs["comment_datetime"].apply(
+        unique_issues[
+            unique_issues["comment_datetime"].apply(
                 lambda x: isinstance(
                     x,
                     pd.Timestamp,
@@ -233,7 +393,7 @@ def process_prs_for_ttr(df, report_date_est):
         .reset_index(drop=True)
         .copy()
     )
-    unique_prs_with_response = list(with_response["number"].unique())
+    unique_issues_with_response = list(with_response["number"].unique())
 
     # create indicator var for when username != comment_username
     # ------------------------------
@@ -284,6 +444,7 @@ def process_prs_for_ttr(df, report_date_est):
         on="number",
         how="left",
     )
+
     # drop rows where top is 1
     # ------------------------------
     self_response = self_response[self_response["drop"] != 1].copy()
@@ -305,7 +466,7 @@ def process_prs_for_ttr(df, report_date_est):
     # check that all records are accounted for after manipulations
     # ------------------------------
     if not len(self_response["number"]) + len(external_response["number"]) == len(
-        unique_prs_with_response
+        unique_issues_with_response
     ):
         raise ValueError(
             "Number of unique issues with a response has changed,"
@@ -316,10 +477,10 @@ def process_prs_for_ttr(df, report_date_est):
         pass
 
     # confirm issue counts are correct after segmentation
-    # ------------------------------
+    # ----------------------------------------
     if not len(self_response["number"]) + len(external_response["number"]) + len(
         no_response["number"]
-    ) == len(unique_prs):
+    ) == len(unique_issues):
         raise ValueError(
             "Number of unique issues has changed after segmentation,"
             " which indicates a problem with the data processing."
@@ -331,7 +492,7 @@ def process_prs_for_ttr(df, report_date_est):
     # Determine time-to-respond metric
     # ------------------------------
 
-    prs_segmented = pd.concat(
+    issues_segmented = pd.concat(
         [
             no_response,
             self_response,
@@ -339,16 +500,15 @@ def process_prs_for_ttr(df, report_date_est):
         ]
     )
 
-    prs_segmented = prs_segmented.sort_values("number", ascending=False)
+    issues_segmented = issues_segmented.sort_values("number", ascending=False)
 
-    def assign_ttr_date(row, report_date_est):
+    def assign_ttr_date(row, report_date):
         """
         Function to assign a date to use for time-to-respond metric based on
         the status of the issue.
         """
         # format report date
-        report_date_est = pd.to_datetime(report_date_est)
-        report_date = report_date_est.tz_localize(None)
+        report_date = pd.to_datetime(report_date)
 
         # assign ttr_date based on status
         if row["status"] == "no response":
@@ -369,7 +529,6 @@ def process_prs_for_ttr(df, report_date_est):
                     pd.to_datetime(row["datetime_closed"]),
                     pd.to_datetime(row["comment_datetime"]),
                 )
-
             else:
                 if not isinstance(row["comment_datetime"], pd.Timestamp):
                     print("\n--- BAD TYPE DETECTED ---")
@@ -383,17 +542,16 @@ def process_prs_for_ttr(df, report_date_est):
                 " or 'external comment'."
             )
 
-    prs_segmented["ttr_date"] = prs_segmented.apply(
+    issues_segmented["ttr_date"] = issues_segmented.apply(
         lambda x: assign_ttr_date(
             x,
-            report_date_est,
+            report_date,
         ),
         axis=1,
     )
 
     # Compute time elapsed in business days
     # ------------------------------
-
     def business_hours_elapsed(df):
         # build holiday set
         start_holiday = df["datetime_opened"].min().floor("D")
@@ -421,10 +579,10 @@ def process_prs_for_ttr(df, report_date_est):
         df["ttr_hours"] = df.apply(calc, axis=1)
         return df
 
-    prs_segmented = business_hours_elapsed(prs_segmented)
-    prs_segmented["ttr_days"] = round(prs_segmented["ttr_hours"] / 24, 2)
+    issues_segmented = business_hours_elapsed(issues_segmented)
+    issues_segmented["ttr_days"] = round(issues_segmented["ttr_hours"] / 24, 2)
 
-    return prs_segmented
+    return issues_segmented
 
 
 # %% ---------------------------
@@ -491,9 +649,9 @@ def generate_ttr_table(data):
 
         return ttr_percent_bins
 
-    ttr_prs_table = percent_bins_table(df)
+    ttr_issues_table = percent_bins_table(df)
 
-    ttr_prs_table = ttr_prs_table.rename(
+    ttr_issues_table = ttr_issues_table.rename(
         columns={
             "bins": "Time Window",
             "percent": "Percent",
@@ -501,7 +659,7 @@ def generate_ttr_table(data):
         }
     )
 
-    return ttr_prs_table
+    return ttr_issues_table
 
 
 # %% ---------------------------
@@ -510,11 +668,12 @@ def generate_ttr_table(data):
 
 
 def prep_report_data_for_saving(
+    start_date,
     report_date,
-    pr_status,
+    issues_status,
     opened_by_status,
-    ttr_prs,
-    nondev_ttr_prs,
+    ttr_issues,
+    nondev_ttr_issues,
     overwrite_historical_data=False,
 ):
     # load historical data and check for report_date
@@ -525,11 +684,18 @@ def prep_report_data_for_saving(
         with open(REPORTPATH, "rb") as f:
             hist_report_data = pickle.load(f)
 
-        if report_date in hist_report_data["report_date"].unique():
+        hist_report_data["date_range"] = hist_report_data.apply(
+            lambda x: f"{x['start_date']}_{x['report_date']}",
+            axis=1,
+        )
+
+        report_date_range = f"{start_date}_{report_date}"
+
+        if report_date_range in hist_report_data["date_range"].unique():
             if overwrite_historical_data:
                 print(
-                    f"Report data for {report_date} already exists and will "
-                    "be overwritten."
+                    f"Report data for the range {start_date} to {report_date} "
+                    "already exists and will be overwritten."
                 )
                 # drop existing data for report_date
                 hist_report_data = hist_report_data.loc[
@@ -537,22 +703,24 @@ def prep_report_data_for_saving(
                 ]
             else:
                 raise ValueError(
-                    f"Report data for {report_date} already exists."
+                    f"Report data for the range {start_date} to {report_date}"
+                    "already exists."
                     " Since overwrite_historical_data is False, the"
                     " saving cannot proceed."
                 )
 
-    # pr_status metric
+    # issues_status metric
     # ----------------------------------------
-    pr_status["report_date"] = f"{report_date}"
-    pr_status["metric"] = "pr_status"
-    pr_status["indicator_name"] = "open_status"
-    pr_status["value_type"] = "count"
-    pr_status["sub_value_type"] = "percent"
+    issues_status["report_date"] = f"{report_date}"
+    issues_status["start_date"] = f"{start_date}"
+    issues_status["metric"] = "issues_status"
+    issues_status["indicator_name"] = "open_status"
+    issues_status["value_type"] = "count"
+    issues_status["sub_value_type"] = "cumulative_percent"
 
-    pr_status = pr_status.rename(
+    issues_status = issues_status.rename(
         columns={
-            "PR Status": "indicator_value",
+            "Issue Status": "indicator_value",
             "Count": "value",
             "Percent": "sub_value",
         }
@@ -561,6 +729,7 @@ def prep_report_data_for_saving(
     # opened_by_dev_status metric
     # ----------------------------------------
     opened_by_status["report_date"] = f"{report_date}"
+    opened_by_status["start_date"] = f"{start_date}"
     opened_by_status["metric"] = "opened_by_dev_status"
     opened_by_status["indicator_name"] = "opened_by"
     opened_by_status["value_type"] = "count"
@@ -568,19 +737,23 @@ def prep_report_data_for_saving(
     opened_by_status["sub_value"] = "NA"
 
     opened_by_status = opened_by_status.rename(
-        columns={"Status": "indicator_value", "PRs Opened": "value"}
+        columns={
+            "opened_by": "indicator_value",
+            "issues_opened": "value",
+        }
     )
 
     # alltime_ttr_perc metric
     # ----------------------------------------
 
-    ttr_prs["report_date"] = f"{report_date}"
-    ttr_prs["metric"] = "time_to_respond"
-    ttr_prs["indicator_name"] = "time_window"
-    ttr_prs["value_type"] = "percent"
-    ttr_prs["sub_value_type"] = "cumulative_percent"
+    ttr_issues["report_date"] = f"{report_date}"
+    ttr_issues["start_date"] = f"{start_date}"
+    ttr_issues["metric"] = "overall_time_to_respond"
+    ttr_issues["indicator_name"] = "time_window"
+    ttr_issues["value_type"] = "percent"
+    ttr_issues["sub_value_type"] = "cumulative_percent"
 
-    ttr_prs = ttr_prs.rename(
+    ttr_issues = ttr_issues.rename(
         columns={
             "Time Window": "indicator_value",
             "Percent": "value",
@@ -591,13 +764,14 @@ def prep_report_data_for_saving(
     # alltime_nondev_ttr_perc metric
     # ----------------------------------------
 
-    nondev_ttr_prs["report_date"] = f"{report_date}"
-    nondev_ttr_prs["metric"] = "nondev_time_to_respond"
-    nondev_ttr_prs["indicator_name"] = "time_window"
-    nondev_ttr_prs["value_type"] = "percent"
-    nondev_ttr_prs["sub_value_type"] = "cumulative_percent"
+    nondev_ttr_issues["report_date"] = f"{report_date}"
+    nondev_ttr_issues["start_date"] = f"{start_date}"
+    nondev_ttr_issues["metric"] = "nondev_time_to_respond"
+    nondev_ttr_issues["indicator_name"] = "time_window"
+    nondev_ttr_issues["value_type"] = "percent"
+    nondev_ttr_issues["sub_value_type"] = "cumulative_percent"
 
-    nondev_ttr_prs = nondev_ttr_prs.rename(
+    nondev_ttr_issues = nondev_ttr_issues.rename(
         columns={
             "Time Window": "indicator_value",
             "Percent": "value",
@@ -609,10 +783,10 @@ def prep_report_data_for_saving(
     # ----------------------------------------
     report_data = pd.concat(
         [
-            pr_status,
+            issues_status,
             opened_by_status,
-            ttr_prs,
-            nondev_ttr_prs,
+            ttr_issues,
+            nondev_ttr_issues,
         ],
         ignore_index=True,
     )
@@ -630,6 +804,7 @@ def prep_report_data_for_saving(
     report_data = report_data[
         [
             "report_date",
+            "start_date",
             "metric",
             "indicator_name",
             "indicator_value",
@@ -643,24 +818,25 @@ def prep_report_data_for_saving(
     return report_data
 
 
-# %% ---------------------------
+# %% ----------------------------------------
 # Define and run report
-# ------------------------------
+# -------------------------------------------
 
 
 def run_report(
-    manual_date=False,
+    start_date=False,
+    end_date=False,
     display_tables=False,
     style_displayed_tables=True,
     save_report_data=True,
     overwrite_historical_data=False,
 ):
     """
-    Run PR analysis report.
+    Run issue analysis report.
 
     Parameters
     ----------
-    manual_date : str or bool
+    end_date : str or bool
         Manual end date for the report in "YYYY-MM-DD HH:MM:SS" format. If False,
         uses the current date.
     display_tables : bool
@@ -673,37 +849,50 @@ def run_report(
     Returns
     -------
     pd.DataFrame
-        Processed DataFrame containing PR data.
+        Processed DataFrame containing issue data.
     """
-    run_date = datetime.now()
+    run_date = datetime.now().date()
 
     # set report end date
     # ------------------------------
-    if manual_date is False:
+    if end_date is False:
         report_date = run_date
     else:
-        report_date = datetime.strptime(manual_date, "%Y-%m-%d").date()
+        report_date = datetime.strptime(end_date, "%Y-%m-%d").date()
 
-    # Load pickle file of raw PR data generated by download_prs.py
+    print(f"Using report date of {report_date}\n")
+
+    # Load pickle file of raw issue data generated by download_issues.py
     # ------------------------------
     with open(DATAPATH, "rb") as f:
-        raw_prs_data = pickle.load(f)
+        raw_issue_data = pickle.load(f)
 
-    raw_prs_data = pd.DataFrame(raw_prs_data)
+    raw_issue_data = pd.DataFrame(raw_issue_data)
 
-    df = raw_prs_data.copy()
+    df = raw_issue_data.copy()
 
     print(
         "Date range of opened issues:",
-        f"\n   First_issue_opened : {df['date_opened'].min()}",
-        f"\n   Last_issue_opened  : {df['date_opened'].max()}",
+        f"\n   First_issue_opened : {df['date_opened'].min()} UTC",
+        f"\n   Last_issue_opened  : {df['date_opened'].max()} UTC",
     )
+
+    # set start date
+    # ------------------------------
+    if start_date is False:
+        # datetime of earliest record in EST
+        start_date = pd.to_datetime(df["date_time"].min(), utc=True)
+        start_date = start_date.tz_convert("US/Eastern")
+        # remove time from record
+        start_date = start_date.tz_localize(None)
+
+    start_date = pd.to_datetime(start_date).date()
+
     print(
         "\nDate range of report:",
-        f"\n   Start : {df['date_opened'].min()}",
-        f"\n   End   : {report_date}",
+        f"\n   Start : {start_date} EST",
+        f"\n   End   : {report_date} EST",
     )
-    peek(df)
 
     # preprocess raw data
     # ------------------------------
@@ -724,43 +913,37 @@ def run_report(
     df = preprocess(
         df,
         dev_usernames,
+        start_date=start_date,
+        end_date=report_date,
     )
 
-    # generate table of PRs opened, closed, merged
+    # generate table of issues opened, closed
     # ------------------------------
-    pr_status_overall = pr_status_counts(df)
+    issues_status_overall = issue_status_counts(df)
 
-    # generate table of PRs opened by developer status
+    # generate table of issues opened by developer status
     # ------------------------------
-    opened_by_status_table = prs_opened_by_users(
+    opened_by_status_table = issues_opened_by_users(
         df,
         by_dev_status=True,
-        show=False,
-    )
-
-    opened_by_status_table = opened_by_status_table.rename(
-        columns={
-            "opened_by": "Status",
-            "prs_opened": "PRs Opened",
-        }
     )
 
     # Generate overall time-to-response table
     # ------------------------------
-    prs_segmented = process_prs_for_ttr(
+    issues_segmented = process_issues_for_ttr(
         df,
         report_date,
     )
-    ttr_prs_table = generate_ttr_table(prs_segmented)
+    ttr_issues_table = generate_ttr_table(issues_segmented)
 
     # Generate non-developer time-to-response table
     # ------------------------------
-    nondev_prs_segmented = process_prs_for_ttr(
+    nondev_issues_segmented = process_issues_for_ttr(
         df.loc[df["opened_by"] != "developer"].reset_index(drop=True),
         report_date,
     )
 
-    nondev_ttr_prs_table = generate_ttr_table(nondev_prs_segmented)
+    nondev_ttr_issues_table = generate_ttr_table(nondev_issues_segmented)
 
     # Display styled or unstyled tables
     # ------------------------------
@@ -768,30 +951,29 @@ def run_report(
         if style_displayed_tables is False:
             display(
                 opened_by_status_table,
-                pr_status_overall,
-                ttr_prs_table,
-                nondev_ttr_prs_table,
+                issues_status_overall,
+                ttr_issues_table,
+                nondev_ttr_issues_table,
             )
         elif style_displayed_tables is True:
             display(
-                render_html_table(pr_status_overall),
+                render_html_table(issues_status_overall),
                 render_html_table(opened_by_status_table),
-                render_html_table(ttr_prs_table),
-                render_html_table(nondev_ttr_prs_table),
+                render_html_table(ttr_issues_table),
+                render_html_table(nondev_ttr_issues_table),
             )
 
     # Save report data
     # ------------------------------
-    # remove time
-    report_date_notime = f"{pd.to_datetime(report_date).date()}"
 
     if save_report_data:
         report_data = prep_report_data_for_saving(
-            report_date_notime,
-            pr_status_overall,
+            start_date,
+            report_date,
+            issues_status_overall,
             opened_by_status_table,
-            ttr_prs_table,
-            nondev_ttr_prs_table,
+            ttr_issues_table,
+            nondev_ttr_issues_table,
             overwrite_historical_data,
         )
 
@@ -806,16 +988,21 @@ def run_report(
 if __name__ == "__main__":
     # set report parameters
     # ------------------------------
-    manual_date = False
+    start_date = False
+    end_date = False
     display_tables = True
     style_displayed_tables = True
     save_report_data = True
-    overwrite_historical_data = False
+    overwrite_historical_data = True
 
-    # Run report
-    # ------------------------------
+    # --> [DEV]
+    if "dylandaniels" in os.getcwd():
+        end_date = "2025-12-01"
+    # --> [END DEV]
+
     processed_df = run_report(
-        manual_date,
+        start_date,
+        end_date,
         display_tables,
         style_displayed_tables,
         save_report_data,
@@ -831,9 +1018,36 @@ if __name__ == "__main__":
 
     # only show data for the current report date
     display(
-        report_data[
-            report_data["report_date"] == str(pd.to_datetime(datetime.now()).date())
-        ]
+        report_data[report_data["report_date"] == str(pd.to_datetime(end_date).date())]
     )
 
-# %%
+
+# %% ----------------------------------------
+# -------------------------------------------
+
+
+# %% ---------------------------
+# examine cases where ttr > 2 days
+# ------------------------------
+
+# long_response = issues_segmented[issues_segmented["ttr_days"] >= 2.0].copy()
+
+# display(long_response["username"].value_counts().reset_index())
+
+
+# def closed_indicator(row):
+#     if pd.notnull(row["date_closed"]):
+#         return "closed"
+#     else:
+#         return "open"
+
+
+# long_response["closed"] = long_response.apply(lambda x: closed_indicator(x), axis=1)
+
+# display(long_response.groupby(["closed", "status"])["number"].count().reset_index())
+
+# display(
+#     long_response.groupby(["username", "closed", "status"])["number"]
+#     .count()
+#     .reset_index()
+# )
