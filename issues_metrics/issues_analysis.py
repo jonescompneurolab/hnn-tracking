@@ -1,4 +1,5 @@
 # %% ----------------------------------------
+# Setup
 # -------------------------------------------
 
 # issues_analysis.py
@@ -7,19 +8,13 @@ import os
 import pickle
 from datetime import datetime, timedelta
 
+import matplotlib.pyplot as plt
 import pandas as pd
+import seaborn as sns
 from IPython.display import HTML, display
 from pandas.tseries.holiday import USFederalHolidayCalendar
 
 DATAPATH = os.path.join("issues_metrics", "raw_issues_data.pkl")
-
-REPORTPATH = os.path.join(
-    "issues_metrics",
-    "issues_report.pkl",
-)
-
-# %% ----------------------------------------
-# -------------------------------------------
 
 
 # function to style html tables
@@ -52,7 +47,7 @@ def peek(df, n=1):
 
 
 # %% ----------------------------------------
-# Preprocessing
+# Data preprocessing
 # -------------------------------------------
 
 
@@ -83,6 +78,8 @@ def preprocess(
     start_date=False,
     end_date=False,
 ):
+    df = df.copy()
+
     df = process_datetime(
         df,
         [
@@ -95,10 +92,7 @@ def preprocess(
     # filter on start_date
     # ------------------------------
     if isinstance(pd.to_datetime(start_date), pd.Timestamp):
-        df = df.loc[
-            df["date_opened"] >= pd.to_datetime(start_date).date()
-        ]
-
+        df = df.loc[df["date_opened"] >= pd.to_datetime(start_date).date()]
 
     def assign_dev(row):
         if row in dev_usernames:
@@ -118,7 +112,9 @@ def preprocess(
     # removing any dates after "end_date"
     # ------------------------------
     if isinstance(pd.to_datetime(end_date), pd.Timestamp):
+        # Create date object and also timestamp object (for safe comparison)
         end_date = pd.to_datetime(end_date).date()
+        end_ts = pd.to_datetime(end_date)
 
         # remove issues opened after end_date
         # ------------------------------
@@ -131,10 +127,10 @@ def preprocess(
         # clear fields for issues closed
         # after the end_date
         # ------------------------------
-
-        invalid_dateclosed = df.loc[
-            pd.to_datetime(df["datetime_closed"]).dt.date >= end_date
-        ]["number"].unique()
+        # Note: need to compare timestampts to handle NaTs properly
+        invalid_dateclosed = df.loc[pd.to_datetime(df["datetime_closed"]) >= end_ts][
+            "number"
+        ].unique()
 
         for issue_num in invalid_dateclosed:
             # set date_closed and datetime_closed to NaT
@@ -151,7 +147,8 @@ def preprocess(
         # clear fields for *only* the
         # comments made after the end_date
         # ------------------------------
-        invalid_commentdate = pd.to_datetime(df["comment_datetime"]).dt.date >= end_date
+        # Note: need to compare timestampts to handle NaTs properly
+        invalid_commentdate = pd.to_datetime(df["comment_datetime"]) >= end_ts
 
         # set comment_date and comment_datetime to NaT
         # set comment_username and comment_contents to ""
@@ -189,10 +186,6 @@ def preprocess(
     ]
 
     return df
-
-
-# %% ----------------------------------------
-# -------------------------------------------
 
 
 # number of issues by by username
@@ -234,7 +227,8 @@ def issues_by_user(
                             "issues_opened": [issues_by_user["issues_opened"].sum()],
                         }
                     ),
-                ]
+                ],
+                ignore_index=True,
             ).reset_index(drop=True)
         )
 
@@ -264,6 +258,20 @@ def issue_status_counts(
     df = df.drop_duplicates().reset_index(drop=True)
 
     total = len(df["number"])
+
+    if total == 0:
+        return pd.DataFrame(
+            {
+                "Issue Status": [
+                    "New Issues",
+                    "Outstanding Issues",
+                    "Closed Issues",
+                ],
+                "Count": [0, 0, 0],
+                "Percent": [0.0, 0.0, 0.0],
+            }
+        )
+
     closed_issues = df["date_closed"].notna().sum()
     outstanding_issues = total - closed_issues
 
@@ -334,7 +342,8 @@ def issues_opened_by_users(
                     "issues_opened": [issues_by_user["issues_opened"].sum()],
                 }
             ),
-        ]
+        ],
+        ignore_index=True,
     ).reset_index(drop=True)
 
     if return_df:
@@ -377,6 +386,9 @@ def process_issues_for_ttr(
         .copy()
     )
 
+    if no_response.empty:
+        no_response = pd.DataFrame(columns=unique_issues.columns)
+
     no_response["status"] = "no response"
 
     # get issues w/ comments
@@ -393,6 +405,11 @@ def process_issues_for_ttr(
         .reset_index(drop=True)
         .copy()
     )
+
+    # ensure DataFrame has the right columns if empty
+    if with_response.empty:
+        with_response = pd.DataFrame(columns=unique_issues.columns)
+
     unique_issues_with_response = list(with_response["number"].unique())
 
     # create indicator var for when username != comment_username
@@ -494,10 +511,15 @@ def process_issues_for_ttr(
 
     issues_segmented = pd.concat(
         [
-            no_response,
-            self_response,
-            external_response,
-        ]
+            df
+            for df in [
+                no_response,
+                self_response,
+                external_response,
+            ]
+            if not df.empty
+        ],
+        ignore_index=True,
     )
 
     issues_segmented = issues_segmented.sort_values("number", ascending=False)
@@ -662,53 +684,86 @@ def generate_ttr_table(data):
     return ttr_issues_table
 
 
+# %% ----------------------------------------
+# Define and run reports
+# -------------------------------------------
+
+
+def build_report_tables_from_records(
+    df,
+    report_date=None,
+    display_tables=True,
+    style_displayed_tables=True,
+):
+    """
+    Build report tables from the processed data.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+    report_date : datetime.date, optional
+    display_tables : bool
+    style_displayed_tables : bool
+
+    Returns
+    -------
+    dict
+    """
+    if report_date is None:
+        report_date = datetime.now().date()
+
+    # Issue status metrics
+    issues_status_overall = issue_status_counts(df)
+
+    opened_by_status_table = issues_opened_by_users(
+        df,
+        by_dev_status=True,
+    )
+
+    # Time-to-response metrics
+    issues_segmented = process_issues_for_ttr(df, report_date)
+    ttr_issues_table = generate_ttr_table(issues_segmented)
+
+    nondev_issues = df.loc[df["opened_by"] != "developer"].reset_index(drop=True)
+    if nondev_issues.empty:
+        nondev_ttr_issues_table = pd.DataFrame(
+            columns=["Time Window", "Percent", "Cumulative Percent"]
+        )
+    else:
+        nondev_issues_segmented = process_issues_for_ttr(nondev_issues, report_date)
+        nondev_ttr_issues_table = generate_ttr_table(nondev_issues_segmented)
+
+    tables = {
+        "issues_status_overall": issues_status_overall,
+        "opened_by_status_table": opened_by_status_table,
+        "ttr_issues_table": ttr_issues_table,
+        "nondev_ttr_issues_table": nondev_ttr_issues_table,
+    }
+
+    if display_tables:
+        if style_displayed_tables:
+            for key, table in tables.items():
+                render_html_table(table)
+        else:
+            for table in tables.values():
+                display(table)
+
+    return tables
+
+
 # %% ---------------------------
 # Process report data for saving
 # ------------------------------
 
 
-def prep_report_data_for_saving(
+def prep_alltime_data_for_saving(
     start_date,
     report_date,
     issues_status,
     opened_by_status,
     ttr_issues,
     nondev_ttr_issues,
-    overwrite_historical_data=False,
 ):
-    # load historical data and check for report_date
-    # ----------------------------------------
-    report_exists = os.path.exists(REPORTPATH)
-
-    if report_exists:
-        with open(REPORTPATH, "rb") as f:
-            hist_report_data = pickle.load(f)
-
-        hist_report_data["date_range"] = hist_report_data.apply(
-            lambda x: f"{x['start_date']}_{x['report_date']}",
-            axis=1,
-        )
-
-        report_date_range = f"{start_date}_{report_date}"
-
-        if report_date_range in hist_report_data["date_range"].unique():
-            if overwrite_historical_data:
-                print(
-                    f"Report data for the range {start_date} to {report_date} "
-                    "already exists and will be overwritten."
-                )
-                # drop existing data for report_date
-                hist_report_data = hist_report_data.loc[
-                    hist_report_data["report_date"] != f"{report_date}"
-                ]
-            else:
-                raise ValueError(
-                    f"Report data for the range {start_date} to {report_date}"
-                    "already exists."
-                    " Since overwrite_historical_data is False, the"
-                    " saving cannot proceed."
-                )
-
     # issues_status metric
     # ----------------------------------------
     issues_status["report_date"] = f"{report_date}"
@@ -745,7 +800,6 @@ def prep_report_data_for_saving(
 
     # alltime_ttr_perc metric
     # ----------------------------------------
-
     ttr_issues["report_date"] = f"{report_date}"
     ttr_issues["start_date"] = f"{start_date}"
     ttr_issues["metric"] = "overall_time_to_respond"
@@ -763,7 +817,6 @@ def prep_report_data_for_saving(
 
     # alltime_nondev_ttr_perc metric
     # ----------------------------------------
-
     nondev_ttr_issues["report_date"] = f"{report_date}"
     nondev_ttr_issues["start_date"] = f"{start_date}"
     nondev_ttr_issues["metric"] = "nondev_time_to_respond"
@@ -779,28 +832,20 @@ def prep_report_data_for_saving(
         }
     )
 
-    # concatenate all report data
-    # ----------------------------------------
     report_data = pd.concat(
         [
-            issues_status,
-            opened_by_status,
-            ttr_issues,
-            nondev_ttr_issues,
+            df
+            for df in [
+                issues_status,
+                opened_by_status,
+                ttr_issues,
+                nondev_ttr_issues,
+            ]
+            if not df.empty
         ],
         ignore_index=True,
     )
 
-    if report_exists:
-        report_data = pd.concat(
-            [
-                hist_report_data,
-                report_data,
-            ]
-        )
-
-    # order columns
-    # ----------------------------------------
     report_data = report_data[
         [
             "report_date",
@@ -818,38 +863,163 @@ def prep_report_data_for_saving(
     return report_data
 
 
-# %% ----------------------------------------
-# Define and run report
-# -------------------------------------------
-
-
-def run_report(
-    start_date=False,
-    end_date=False,
-    display_tables=False,
-    style_displayed_tables=True,
-    save_report_data=True,
+def save_alltime_report_data(
+    hist_report_data,
+    new_report_data,
+    unique_id_cols,
+    report_path,
     overwrite_historical_data=False,
 ):
+    """ """
+
+    if overwrite_historical_data:
+        if os.path.exists(report_path):
+            print("Overwriting previous report with new data")
+
+            with open(report_path, "wb") as f:
+                pickle.dump(new_report_data, f)
+
+            print(f"\nReport saved to: {report_path}")
+        else:
+            with open(report_path, "wb") as f:
+                pickle.dump(new_report_data, f)
+
+            print(f"\nReport saved to: {report_path}")
+
+    elif (
+        (os.path.exists(report_path))
+        and (not overwrite_historical_data)
+        and (unique_id_cols)
+    ):
+        with open(report_path, "rb") as f:
+            hist_report_data = pickle.load(f)
+
+        # create unique id column for historical data
+        hist_report_data["unique_id"] = (
+            hist_report_data[unique_id_cols].astype(str).agg("_".join, axis=1)
+        )
+        new_report_data["unique_id"] = (
+            new_report_data[unique_id_cols].astype(str).agg("_".join, axis=1)
+        )
+
+        # identify overlapping unique ids
+        overlapping_ids = new_report_data["unique_id"].isin(
+            hist_report_data["unique_id"]
+        )
+
+        # check if unique id already exists in historical data
+        if overlapping_ids.any():
+            print(
+                f"Unique IDs '{overlapping_ids}' already exists in the historical "
+                "data. Set overwrite_historical_data=True to replace the data.\n"
+                "Retaining historical data and appending new data only."
+            )
+
+            new_report_data = new_report_data[~overlapping_ids]
+
+        combined = pd.concat(
+            [
+                new_report_data,
+                hist_report_data,
+            ],
+            ignore_index=True,
+        )
+        combined = combined.drop(columns=["unique_id"])
+
+        with open(report_path, "wb") as f:
+            pickle.dump(combined, f)
+
+        print(f"\nReport saved to: {report_path}")
+
+    else:
+        if unique_id_cols:
+            print(
+                "Unable to process historical report data. Check that "
+                f"the datapath '{report_path}' is correct."
+                "\n\nReport not saved."
+            )
+        else:
+            print(
+                "The 'unique_id_cols' parameter must be passed when "
+                "'overwrite_historical_data' is False or None. Please "
+                "pass a valid list of column names to use as the unique "
+                "identifiers"
+                "\n\nReport not saved."
+            )
+
+    return
+
+
+def build_report_tables_from_pickle(
+    report_data,
+    display_tables=True,
+    style_displayed_tables=True,
+):
     """
-    Run issue analysis report.
+    Build report tables from saved metrics data in a generic way.
 
     Parameters
     ----------
-    end_date : str or bool
-        Manual end date for the report in "YYYY-MM-DD HH:MM:SS" format. If False,
-        uses the current date.
+    report_data : pd.DataFrame
     display_tables : bool
-        Whether to display the report tables.
     style_displayed_tables : bool
-        Whether to add HTML styling to the displayed tables
-    save_report_data : bool
-        Whether to save the report data.
+
+    Returns
+    -------
+    dict
+        Dictionary of tables keyed by metric type.
+    """
+    df = report_data.copy()
+
+    tables = {}
+
+    for metric, group in df.groupby("metric"):
+        # drop columns not needed for display
+        table = group.drop(
+            columns=[
+                "report_date",
+                "start_date",
+                "metric",
+                "value_type",
+                "sub_value_type",
+                "grant_year",
+            ]
+        )
+        tables[metric] = table.reset_index(drop=True)
+
+    if display_tables:
+        for key, table in tables.items():
+            if style_displayed_tables:
+                render_html_table(table)
+            else:
+                display(table)
+
+    return
+
+
+def run_alltime_report(
+    raw_issue_data=False,
+    start_date=False,
+    end_date=False,
+    save_report_data=True,
+    report_name="basic_report.pkl",
+    dev_usernames=[
+        "stephanie-r-jones",
+        "jasmainak",
+        "ntolley",
+        "rythorpe",
+        "asoplata",
+        "dylansdaniels",
+        "blakecaldwell",
+    ],
+):
+    """
+    Run issues report.
 
     Returns
     -------
     pd.DataFrame
-        Processed DataFrame containing issue data.
+        Processed DataFrame containing issues data.
     """
     run_date = datetime.now().date()
 
@@ -858,16 +1028,18 @@ def run_report(
     if end_date is False:
         report_date = run_date
     else:
-        report_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+        report_date = datetime.strptime(str(end_date), "%Y-%m-%d").date()
 
     print(f"Using report date of {report_date}\n")
 
-    # Load pickle file of raw issue data generated by download_issues.py
+    # If needed, load pickle file of raw issue data
+    # generated by download_issues.py
     # ------------------------------
-    with open(DATAPATH, "rb") as f:
-        raw_issue_data = pickle.load(f)
+    if not isinstance(raw_issue_data, pd.DataFrame):
+        with open(DATAPATH, "rb") as f:
+            raw_issue_data = pickle.load(f)
 
-    raw_issue_data = pd.DataFrame(raw_issue_data)
+        raw_issue_data = pd.DataFrame(raw_issue_data)
 
     df = raw_issue_data.copy()
 
@@ -896,20 +1068,6 @@ def run_report(
 
     # preprocess raw data
     # ------------------------------
-    dev_usernames = [
-        "jasmainak",
-        "ntolley",
-        "asoplata",
-        "dylansdaniels",
-        "katduecker",
-        "carolinafernandezp",
-        "gtdang",
-        "kmilo9999",
-        "samadpls",
-        "Myrausman",
-        "Chetank99",
-    ]
-
     df = preprocess(
         df,
         dev_usernames,
@@ -930,124 +1088,867 @@ def run_report(
 
     # Generate overall time-to-response table
     # ------------------------------
-    issues_segmented = process_issues_for_ttr(
-        df,
-        report_date,
-    )
-    ttr_issues_table = generate_ttr_table(issues_segmented)
+    if df.empty:
+        ttr_issues_table = pd.DataFrame(
+            columns=[
+                "Time Window",
+                "Percent",
+                "Cumulative Percent",
+            ]
+        )
+    else:
+        issues_segmented = process_issues_for_ttr(
+            df,
+            report_date,
+        )
+        ttr_issues_table = generate_ttr_table(issues_segmented)
 
     # Generate non-developer time-to-response table
     # ------------------------------
-    nondev_issues_segmented = process_issues_for_ttr(
-        df.loc[df["opened_by"] != "developer"].reset_index(drop=True),
+
+    nondev_issues = df.loc[df["opened_by"] != "developer"].reset_index(drop=True)
+
+    if nondev_issues.empty:
+        print("\nNo issues opened by non-developers in the specified date range.")
+        nondev_issues_segmented = pd.DataFrame(
+            columns=[
+                "number",
+                "date_opened",
+                "datetime_opened",
+                "opened_by",
+                "username",
+                "issue_name",
+                "issue_url",
+                "date_closed",
+                "datetime_closed",
+                "closed_by",
+                "comment_date",
+                "comment_datetime",
+                "comment_username",
+                "comment_contents",
+                "status",
+                "ttr_date",
+                "ttr_hours",
+                "ttr_days",
+            ]
+        )
+        nondev_ttr_issues_table = pd.DataFrame(
+            columns=[
+                "Time Window",
+                "Percent",
+                "Cumulative Percent",
+            ]
+        )
+    else:
+        nondev_issues_segmented = process_issues_for_ttr(
+            df.loc[df["opened_by"] != "developer"].reset_index(drop=True),
+            report_date,
+        )
+        nondev_ttr_issues_table = generate_ttr_table(nondev_issues_segmented)
+
+    # format report data
+    # ------------------------------
+    report_data = prep_alltime_data_for_saving(
+        start_date,
         report_date,
+        issues_status_overall,
+        opened_by_status_table,
+        ttr_issues_table,
+        nondev_ttr_issues_table,
     )
 
-    nondev_ttr_issues_table = generate_ttr_table(nondev_issues_segmented)
-
-    # Display styled or unstyled tables
+    # optionally save report data
     # ------------------------------
-    if display_tables:
-        if style_displayed_tables is False:
-            display(
-                opened_by_status_table,
-                issues_status_overall,
-                ttr_issues_table,
-                nondev_ttr_issues_table,
-            )
-        elif style_displayed_tables is True:
-            display(
-                render_html_table(issues_status_overall),
-                render_html_table(opened_by_status_table),
-                render_html_table(ttr_issues_table),
-                render_html_table(nondev_ttr_issues_table),
-            )
 
-    # Save report data
-    # ------------------------------
+    # --- DEV NOTE --- #
+    #  Currently using pickle instead of save_alltime_report_data()
 
     if save_report_data:
-        report_data = prep_report_data_for_saving(
-            start_date,
-            report_date,
-            issues_status_overall,
-            opened_by_status_table,
-            ttr_issues_table,
-            nondev_ttr_issues_table,
-            overwrite_historical_data,
+        report_path = os.path.join(
+            "issues_metrics",
+            report_name,
         )
 
-        with open(REPORTPATH, "wb") as f:
-            pickle.dump(report_data, f)
+        report_data.to_pickle(report_path)
 
-        print(f"\nReport data saved to {REPORTPATH}")
+        print(f"\nReport data saved to {report_path}")
+    # --- END NOTE --- #
 
-    return df
+    return report_data
 
 
-if __name__ == "__main__":
+def run_monthly_report(
+    start_date=False,
+    end_date=False,
+    save_report_data=True,
+    report_name="monthly_report.pkl",
+    dev_usernames=[
+        "stephanie-r-jones",
+        "jasmainak",
+        "ntolley",
+        "rythorpe",
+        "asoplata",
+        "dylansdaniels",
+        "blakecaldwell",
+    ],
+):
+    run_date = datetime.now().date()
+
+    report_path = os.path.join(
+        "issues_metrics",
+        report_name,
+    )
+    agg_report_data = []
+
+    # Load pickle file of raw issue data
+    # ------------------------------
+    with open(DATAPATH, "rb") as f:
+        raw_issue_data = pickle.load(f)
+
+    raw_issue_data = pd.DataFrame(raw_issue_data)
+    df = raw_issue_data.copy()
+
+    print(
+        "Date range of opened issues:",
+        f"\n   First_issue_opened : {df['date_opened'].min()} UTC",
+        f"\n   Last_issue_opened  : {df['date_opened'].max()} UTC",
+    )
+
+    # set report start / end dates
+    # ------------------------------
+    if end_date is False:
+        end_date = run_date
+    else:
+        end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+
+    if start_date is False:
+        # use datetime of earliest record in EST
+        start_date = pd.to_datetime(df["date_time"].min(), utc=True)
+        start_date = start_date.tz_convert("US/Eastern")
+        start_date = start_date.tz_localize(None)
+
+    start_date = pd.to_datetime(start_date).date()
+
+    # preprocess raw data
+    # ------------------------------
+    # need to use the processed data to get accurate year-months after
+    # timezone conversions
+    tmp_df = preprocess(
+        df,
+        dev_usernames,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    # get year-month
+    tmp_df["year_month"] = pd.to_datetime(tmp_df["date_opened"]).dt.to_period("M")
+
+    year_months = tmp_df["year_month"].sort_values().unique()
+
+    # loop through year-months for monthly metrics
+    # ------------------------------
+    for month in year_months:
+        print(f"DEV: processing data for {month}")
+
+        # get first and last day of month
+        month_start = month.to_timestamp().date()
+        month_end = (month + 1).to_timestamp().date() - timedelta(days=1)
+
+        metrics_monthly = run_alltime_report(
+            raw_issue_data=raw_issue_data,
+            start_date=month_start,
+            end_date=month_end,
+            save_report_data=False,
+            dev_usernames=dev_usernames,
+        )
+
+        metrics_monthly["metric_period"] = "monthly"
+
+        agg_report_data.append(metrics_monthly)
+
+    # loop through year-months for rolling metrics
+    for month in year_months:
+        month_end = (month + 1).to_timestamp().date() - timedelta(days=1)
+
+        metrics_monthly = run_alltime_report(
+            raw_issue_data=raw_issue_data,
+            start_date=start_date,
+            end_date=month_end,
+            save_report_data=False,
+            dev_usernames=dev_usernames,
+        )
+
+        metrics_monthly["metric_period"] = "rolling_monthly"
+
+        agg_report_data.append(metrics_monthly)
+
+    # combine reports
+    combined_report_data = pd.concat(
+        agg_report_data,
+        ignore_index=True,
+    )
+
+    # save to pickle, overwrite data
+    if save_report_data:
+        save_alltime_report_data(
+            hist_report_data=None,
+            new_report_data=combined_report_data,
+            unique_id_cols=None,
+            report_path=report_path,
+            overwrite_historical_data=True,
+        )
+
+    return
+
+
+def run_u24_ttr_report(
+    start_date="2023-08-01",
+    end_date=False,
+    save_report_data=True,
+    report_name="u24_issues_report.pkl",
+    overwrite_historical_data=False,
+    dev_usernames=[
+        "stephanie-r-jones",
+        "jasmainak",
+        "ntolley",
+        "rythorpe",
+        "asoplata",
+        "dylansdaniels",
+        "blakecaldwell",
+    ],
+):
+    run_date = datetime.now().date()
+
+    if end_date is False or end_date is True:
+        end_date = str(run_date)
+
+    report_path = os.path.join("issues_metrics", report_name)
+    all_report_data = []
+
+    # -------------------------------
+    # All-time report
+    # -------------------------------
+
+    metrics_alltime = run_alltime_report(
+        start_date=start_date,
+        end_date=end_date,
+        save_report_data=False,
+        report_name=report_name,
+        dev_usernames=dev_usernames,
+    )
+
+    metrics_alltime["grant_year"] = "all_time"
+
+    all_report_data.append(metrics_alltime)
+
+    # -------------------------------
+    # Grant year reports
+    # -------------------------------
+    grant_years = [
+        ("2023-08-01", "2024-07-31"),
+        ("2024-08-01", "2025-07-31"),
+        ("2025-08-01", "2026-07-31"),
+        ("2026-08-01", "2027-07-31"),
+        ("2027-08-01", "2028-07-31"),
+    ]
+
+    # filter to only grant years ending <= end_date
+    grant_years = [gy for gy in grant_years if gy[0] <= end_date]
+
+    for i, (gy_start, gy_end) in enumerate(grant_years, start=1):
+        metrics_gy = run_alltime_report(
+            start_date=gy_start,
+            end_date=gy_end,
+            save_report_data=False,
+            report_name=report_name,
+            dev_usernames=dev_usernames,
+        )
+
+        metrics_gy["grant_year"] = f"year {i}"
+        all_report_data.append(metrics_gy)
+
+    # combine all reports
+    combined_report_data = pd.concat(
+        all_report_data,
+        ignore_index=True,
+    )
+
+    # save to pickle
+    if save_report_data:
+        # open historical data if it exists
+        if os.path.exists(report_path):
+            with open(report_path, "rb") as f:
+                hist_report_data = pickle.load(f)
+        else:
+            hist_report_data = None
+
+        save_alltime_report_data(
+            hist_report_data=hist_report_data,
+            new_report_data=combined_report_data,
+            unique_id_cols=["report_date", "start_date", "grant_year", "metric"],
+            report_path=report_path,
+            overwrite_historical_data=overwrite_historical_data,
+        )
+
+    return combined_report_data
+
+
+# %% ----------------------------------------
+# Define report-specific visualizations
+# -------------------------------------------
+
+sns.set_palette("Set2")
+
+
+# barplot of counts
+# ----------------------------
+def barplot_counts(
+    report_data,
+    metrics=None,
+    value_col="value",
+):
+    df = report_data.copy()
+
+    if metrics is None:
+        metrics = ["issues_status"]
+
+    for metric in metrics:
+        yearly_data = df[df["metric"] == metric].copy()
+        # yearly_data = yearly_data[yearly_data["grant_year"] != "all_time"]
+
+        # replace "all_time" with "Overall"
+        yearly_data["grant_year"] = yearly_data["grant_year"].replace(
+            {"all_time": "Overall"}
+        )
+
+        if yearly_data.empty:
+            continue
+
+        pivot_table = yearly_data.pivot_table(
+            index="grant_year",
+            columns="indicator_value",
+            values=value_col,
+            aggfunc="first",
+        ).sort_index()
+
+        # order bars so that the order is new issues, closed issues, outstanding issues
+        if metric == "issues_status":
+            pivot_table = pivot_table.reindex(
+                columns=[
+                    "New Issues",
+                    "Closed Issues",
+                    "Outstanding Issues",
+                ]
+            )
+
+        ax = pivot_table.plot(kind="bar", figsize=(9, 5), width=0.8)
+        ax.set_title(f"{metric.replace('_', ' ').title()} by Grant Year", fontsize=14)
+        ax.set_xlabel("Grant Year", fontsize=12)
+        ax.set_ylabel(value_col.capitalize(), fontsize=12)
+        ax.grid(axis="y", linestyle="--", alpha=0.4)
+        ax.legend(title="Indicator", bbox_to_anchor=(1.05, 1), loc="upper left")
+        plt.xticks(rotation=0)
+
+        # Add data labels
+        for p in ax.patches:
+            height = p.get_height()
+            if not pd.isna(height):
+                ax.annotate(
+                    f"{int(height)}",
+                    (p.get_x() + p.get_width() / 2.0, height),
+                    ha="center",
+                    va="bottom",
+                    fontsize=10,
+                )
+
+        plt.tight_layout()
+        plt.show()
+
+
+# Stacked percent bar charts for TTR metrics
+# ---------------------------------
+def barplot_stacked(
+    report_data,
+    metrics=None,
+    value_col="value",
+):
+    df = report_data.copy()
+
+    if metrics is None:
+        metrics = ["opened_by_dev_status"]
+
+    for metric in metrics:
+        metric_data = df[df["metric"] == metric]
+        # remove "all_time" and "Total" rows
+        yearly_data = metric_data[
+            (metric_data["grant_year"] != "all_time")
+            & (metric_data["indicator_value"].str.lower() != "total")
+        ]
+
+        if yearly_data.empty:
+            continue
+
+        # Pivot to wide format
+        pivot_table = yearly_data.pivot_table(
+            index="grant_year",
+            columns="indicator_value",
+            values=value_col,
+            aggfunc="first",
+        ).sort_index()
+
+        # Convert to percent
+        pivot_table_percent = pivot_table.div(pivot_table.sum(axis=1), axis=0) * 100
+
+        ax = pivot_table_percent.plot(
+            kind="bar", stacked=True, figsize=(9, 5), colormap="Set2"
+        )
+        ax.set_title(
+            f"{metric.replace('_', ' ').title()} by Grant Year (Percent)", fontsize=14
+        )
+        ax.set_xlabel("Grant Year", fontsize=12)
+        ax.set_ylabel("Percent (%)", fontsize=12)
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
+        ax.legend(title="Indicator", bbox_to_anchor=(1.05, 1), loc="upper left")
+        plt.xticks(rotation=0)
+
+        # Add data labels
+        for i, row in enumerate(pivot_table_percent.values):
+            cumulative = 0
+            for j, val in enumerate(row):
+                if not pd.isna(val):
+                    ax.text(
+                        i,
+                        cumulative + val / 2,
+                        f"{val:.1f}%",
+                        ha="center",
+                        va="center",
+                        fontsize=10,
+                        color="black",
+                    )
+                    cumulative += val
+
+        plt.tight_layout()
+        plt.show()
+
+
+# lineplot for time-to-response metrics
+# ---------------------------------
+def lineplot_fast_response(
+    report_data,
+    grant_years=[
+        "year 1",
+        "year 2",
+        "year 3",
+    ],
+):
+    df = report_data.copy()
+
+    # Filter to TTR metrics only
+    ttr_metrics = df[
+        df["metric"].isin(
+            [
+                "overall_time_to_respond",
+                "nondev_time_to_respond",
+            ]
+        )
+    ]
+    if ttr_metrics.empty:
+        print("No TTR data available.")
+        return
+
+    # Get counts from opened_by_dev_status
+    counts_df = df[df["metric"] == "opened_by_dev_status"]
+
+    plot_data = []
+
+    for metric, label in zip(
+        ["overall_time_to_respond", "nondev_time_to_respond"],
+        ["All Issue", "Non-Developer Issues"],
+    ):
+        subset = ttr_metrics[ttr_metrics["metric"] == metric]
+
+        # keep only yearly rows
+        subset = subset[subset["grant_year"].isin(grant_years)]
+
+        for _, row in subset.iterrows():
+            if row["indicator_value"] == "< 02 days":
+                percent = row["value"]
+
+                # Map to the correct count
+                indicator_value_map = {
+                    "overall_time_to_respond": "Total",
+                    "nondev_time_to_respond": "non-developer",
+                }
+                count_row = counts_df[
+                    (counts_df["grant_year"] == row["grant_year"])
+                    & (counts_df["indicator_value"] == indicator_value_map[metric])
+                ]
+                count = count_row["value"].values[0] if not count_row.empty else None
+
+                plot_data.append(
+                    {
+                        "grant_year": row["grant_year"],
+                        "percent_fast_response": float(percent),
+                        "count": int(count) if pd.notna(count) else None,
+                        "group": label,
+                    }
+                )
+
+    plot_df = pd.DataFrame(plot_data)
+    plot_df = plot_df.sort_values("grant_year")
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for group, group_df in plot_df.groupby("group"):
+        x = group_df["grant_year"]
+        y = group_df["percent_fast_response"]
+        ax.plot(x, y, marker="o", label=group)
+
+        # Add counts below points
+        for xi, yi, count in zip(x, y, group_df["count"]):
+            if count is not None:
+                ax.text(
+                    xi,
+                    yi + 9,
+                    f"{yi:.0f}%\nn={count}",
+                    ha="center",
+                    va="top",
+                    fontsize=10,
+                    color="black",
+                )
+
+    ax.set_title(
+        "% Issues with Response Time < 2 Business Days",
+        fontsize=14,
+        pad=40,
+    )
+    ax.set_ylabel("Percent (%)", fontsize=12)
+    ax.set_ylim(0, 100)
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+# longitudinal counts
+# -------------------------------------------
+# longitudinal counts
+# -------------------------------------------
+
+def plot_longitudinal_counts(
+    report_data,
+    metric_period="monthly",  # 'monthly' or 'rolling_monthly'
+    value_col="value",
+):
+    """ """
+    df = report_data.copy()
+
+    # Filter for specific period and metric
+    df = df[(df["metric_period"] == metric_period) & (df["metric"] == "issues_status")]
+
+    if df.empty:
+        print(f"No data found for period: {metric_period}")
+        return
+
+    # Fix for rolling data: Use report_date as it changes, whereas start_date is static
+    date_col = "report_date" if "rolling" in metric_period else "start_date"
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.sort_values(date_col)
+
+    # Pivot first to handle aggregations correctly
+    pivot_table = df.pivot_table(
+        index=date_col,
+        columns="indicator_value",
+        values=value_col,
+        aggfunc="first",
+    )
+
+    # Reorder columns
+    desired_order = ["New Issues", "Closed Issues", "Outstanding Issues"]
+    cols = [c for c in desired_order if c in pivot_table.columns]
+    pivot_table = pivot_table[cols]
+
+    # Aggregate to Quarterly if monthly
+    xlabel = "Date"
+    if metric_period == "monthly":
+        # Sum flows, take last value for snapshot/stock
+        agg_dict = {
+            "New Issues": "sum",
+            "Closed Issues": "sum",
+            "Outstanding Issues": "last",
+        }
+        # Only apply if column exists
+        final_agg = {k: v for k, v in agg_dict.items() if k in pivot_table.columns}
+
+        # Resample to Quarter End
+        pivot_table = pivot_table.resample("QE").agg(final_agg)
+
+        # Format index for plotting (e.g., 2023Q1)
+        pivot_table.index = pivot_table.index.to_period("Q").strftime("%Y-Q%q")
+        xlabel = "Quarter"
+    else:
+        # For rolling, keep formatting as YYYY-MM
+        pivot_table.index = pivot_table.index.strftime("%Y-%m")
+
+    ax = pivot_table.plot(kind="bar", figsize=(12, 6), width=0.8)
+
+    title_prefix = "Rolling " if "rolling" in metric_period else "Quarterly "
+    ax.set_title(f"{title_prefix}Issue Volume", fontsize=16)
+    ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_ylabel("Count", fontsize=12)
+    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    ax.legend(title="Status")
+
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_longitudinal_ttr(
+    report_data,
+    metric_period="monthly",  # 'monthly' or 'rolling_monthly'
+    target_bin="< 02 days",
+):
+    """ """
+    df = report_data.copy()
+
+    # Filter for TTR metrics and specific period
+    ttr_metrics = ["overall_time_to_respond", "nondev_time_to_respond"]
+    df = df[
+        (df["metric_period"] == metric_period)
+        & (df["metric"].isin(ttr_metrics))
+        & (df["indicator_value"] == target_bin)
+    ]
+
+    if df.empty:
+        print(f"No TTR data found for period: {metric_period}")
+        return
+
+    # Fix for rolling data: Use report_date as it changes, whereas start_date is static
+    date_col = "report_date" if "rolling" in metric_period else "start_date"
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.sort_values(date_col)
+
+    pivot_df = df.pivot_table(index=date_col, columns="metric", values="value")
+
+    col_map = {
+        "overall_time_to_respond": "All Issues",
+        "nondev_time_to_respond": "Non-Dev Issues",
+    }
+    pivot_df = pivot_df.rename(columns=col_map)
+
+    # Create subplots
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(12, 10), sharex=True)
+
+    targets = ["All Issues", "Non-Dev Issues"]
+    colors = ["#1f77b4", "#ff7f0e"]  # Standard matplotlib blue/orange
+
+    for i, (target, color) in enumerate(zip(targets, colors)):
+        if target in pivot_df.columns:
+            ax = axes[i]
+            ax.plot(
+                pivot_df.index,
+                pivot_df[target],
+                marker="o",
+                linewidth=2,
+                label=target,
+                color=color,
+            )
+
+            ax.set_ylabel("Percent (%)", fontsize=12)
+            ax.set_ylim(0, 105)
+            ax.grid(True, linestyle="--", alpha=0.4)
+            ax.legend(loc="upper left")
+
+            # Only set title on top plot
+            if i == 0:
+                title_prefix = "Rolling " if "rolling" in metric_period else "Monthly "
+                ax.set_title(
+                    f"{title_prefix}Percent Responded {target_bin}", fontsize=16
+                )
+
+    # Custom x-axis ticks: Start, End, and Start of each Year
+    import matplotlib.dates as mdates
+
+    # Calculate specific ticks
+    dates = pivot_df.index
+    start_date = dates.min()
+    end_date = dates.max()
+
+    # Get all Jan 1sts in range
+    years = pd.date_range(start=start_date, end=end_date, freq="AS")
+
+    # Combine and sort unique
+    ticks = sorted(list(set([start_date, end_date] + list(years))))
+
+    # Apply to the bottom axis
+    axes[-1].set_xticks(ticks)
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+    axes[-1].set_xlabel("Date", fontsize=12)
+
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.show()
+
+
+def run_main_reports():
     # set report parameters
     # ------------------------------
     start_date = False
     end_date = False
-    display_tables = True
-    style_displayed_tables = True
-    save_report_data = True
+    # display_tables = True
+    # style_displayed_tables = True
+    save_report_data = False
     overwrite_historical_data = True
+    report_name = "alltime_issues_report.pkl"
+
+    dev_usernames = [
+        "stephanie-r-jones",
+        "jasmainak",
+        "ntolley",
+        "rythorpe",
+        "asoplata",
+        "dylansdaniels",
+        "blakecaldwell",
+        "katduecker",
+        "carolinafernandezp",
+        "gtdang",
+        "kmilo9999",
+        "samadpls",
+        "Myrausman",
+        "Chetank99",
+    ]
 
     # --> [DEV]
     if "dylandaniels" in os.getcwd():
+        start_date = "2019-01-01"
         end_date = "2025-12-01"
     # --> [END DEV]
 
-    processed_df = run_report(
-        start_date,
-        end_date,
-        display_tables,
-        style_displayed_tables,
-        save_report_data,
-        overwrite_historical_data,
+    processed_df = run_alltime_report(
+        start_date=start_date,
+        end_date=end_date,
+        save_report_data=True,
+        report_name=report_name,
+        dev_usernames=dev_usernames,
     )
 
-    # %% -------------------------------------
-    # posthoc checks
-    peek(processed_df)
+    # Run U24 grant-year report
+    u24_report_data = run_u24_ttr_report(
+        end_date=end_date,
+        save_report_data=save_report_data,
+        report_name="u24_issues_report.pkl",
+        overwrite_historical_data=overwrite_historical_data,
+        dev_usernames=dev_usernames,
+    )
 
-    with open(REPORTPATH, "rb") as f:
+    monthly_report_data = run_monthly_report(
+        start_date=start_date,
+        end_date=end_date,
+        save_report_data=True,
+        report_name="monthly_report.pkl",
+        dev_usernames=dev_usernames,
+    )
+
+    # ---------------------------------
+    # posthoc checks
+    # ---------------------------------
+    with open(
+        os.path.join(
+            "issues_metrics",
+            report_name,
+        ),
+        "rb",
+    ) as f:
         report_data = pickle.load(f)
 
     # only show data for the current report date
+    # ---------------------------------
     display(
         report_data[report_data["report_date"] == str(pd.to_datetime(end_date).date())]
     )
 
+    # generate tables for each year
+    # ---------------------------------
+    print(
+        "\n"
+        "====================================\n"
+        "======== U24 Report Outputs ========\n"
+        "====================================\n"
+    )
+    for year in u24_report_data["grant_year"].unique():
+        print(f"\n--- U24 Tables for {year} ---\n")
+        year_data = u24_report_data[u24_report_data["grant_year"] == year]
+        build_report_tables_from_pickle(
+            year_data,
+            display_tables=True,
+            style_displayed_tables=True,
+        )
+
+    # generate U24 plots
+    # ---------------------------------
+    barplot_counts(u24_report_data)
+    barplot_stacked(u24_report_data)
+    lineplot_fast_response(u24_report_data)
+
+    print(
+        "\n"
+        "========================================\n"
+        "======== END U24 Report Outputs ========\n"
+        "========================================\n"
+    )
+
+    print(
+        "\n"
+        "========================================\n"
+        "======== Monthly Report Outputs ========\n"
+        "========================================\n"
+    )
+
+    # monthly and rolling visualizations
+    # ---------------------------------
+    monthly_report_path = os.path.join(
+        "issues_metrics",
+        "monthly_report.pkl",
+    )
+
+    if os.path.exists(monthly_report_path):
+        with open(monthly_report_path, "rb") as f:
+            monthly_data = pickle.load(f)
+
+        # monthly data
+        plot_longitudinal_counts(
+            monthly_data,
+            metric_period="monthly",
+        )
+        plot_longitudinal_ttr(
+            monthly_data,
+            metric_period="monthly",
+        )
+
+        # rolling monthly data
+        plot_longitudinal_counts(
+            monthly_data,
+            metric_period="rolling_monthly",
+        )
+        plot_longitudinal_ttr(
+            monthly_data,
+            metric_period="rolling_monthly",
+        )
+
+    print(
+        "\n"
+        "============================================\n"
+        "======== End Monthly Report Outputs ========\n"
+        "============================================\n"
+    )
+
+    return
+
 
 # %% ----------------------------------------
+# Run main
 # -------------------------------------------
 
-
-# %% ---------------------------
-# examine cases where ttr > 2 days
-# ------------------------------
-
-# long_response = issues_segmented[issues_segmented["ttr_days"] >= 2.0].copy()
-
-# display(long_response["username"].value_counts().reset_index())
-
-
-# def closed_indicator(row):
-#     if pd.notnull(row["date_closed"]):
-#         return "closed"
-#     else:
-#         return "open"
-
-
-# long_response["closed"] = long_response.apply(lambda x: closed_indicator(x), axis=1)
-
-# display(long_response.groupby(["closed", "status"])["number"].count().reset_index())
-
-# display(
-#     long_response.groupby(["username", "closed", "status"])["number"]
-#     .count()
-#     .reset_index()
-# )
+if __name__ == "__main__":
+    run_main_reports()
