@@ -1632,8 +1632,6 @@ def lineplot_fast_response(
 
 # longitudinal counts
 # -------------------------------------------
-# longitudinal counts
-# -------------------------------------------
 
 def plot_longitudinal_counts(
     report_data,
@@ -1650,12 +1648,16 @@ def plot_longitudinal_counts(
         print(f"No data found for period: {metric_period}")
         return
 
-    # Fix for rolling data: Use report_date as it changes, whereas start_date is static
+    # Ensure value column is numeric
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+
+    # Determine date column
+    # Use report_date for rolling so it progresses, start_date for monthly
     date_col = "report_date" if "rolling" in metric_period else "start_date"
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col)
 
-    # Pivot first to handle aggregations correctly
+    # Pivot
     pivot_table = df.pivot_table(
         index=date_col,
         columns="indicator_value",
@@ -1668,31 +1670,45 @@ def plot_longitudinal_counts(
     cols = [c for c in desired_order if c in pivot_table.columns]
     pivot_table = pivot_table[cols]
 
-    # Aggregate to Quarterly if monthly
+    # Plot Lines
+    import matplotlib.dates as mdates
+
+    ax = pivot_table.plot(kind="line", figsize=(12, 6), linewidth=2)
+
+    title_prefix = "Rolling " if "rolling" in metric_period else "Monthly "
     xlabel = "Date"
-    if metric_period == "monthly":
-        # Sum flows, take last value for snapshot/stock
-        agg_dict = {
-            "New Issues": "sum",
-            "Closed Issues": "sum",
-            "Outstanding Issues": "last",
-        }
-        # Only apply if column exists
-        final_agg = {k: v for k, v in agg_dict.items() if k in pivot_table.columns}
 
-        # Resample to Quarter End
-        pivot_table = pivot_table.resample("QE").agg(final_agg)
+    # Calculate Ticks: Start, End, Year Starts
+    dates = pivot_table.index
+    start_date = dates.min()
+    end_date = dates.max()
+    years = pd.date_range(start=start_date, end=end_date, freq="AS")
+    ticks = sorted(list(set([start_date, end_date] + list(years))))
 
-        # Format index for plotting (e.g., 2023Q1)
-        pivot_table.index = pivot_table.index.to_period("Q").strftime("%Y-Q%q")
-        xlabel = "Quarter"
-    else:
-        # For rolling, keep formatting as YYYY-MM
-        pivot_table.index = pivot_table.index.strftime("%Y-%m")
+    ax.set_xticks(ticks)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
 
-    ax = pivot_table.plot(kind="bar", figsize=(12, 6), width=0.8)
+    # Add data labels at the ticks
+    for col in pivot_table.columns:
+        series = pivot_table[col]
+        # Find closest indices to the ticks
+        nearest_idxs = series.index.get_indexer(ticks, method="nearest")
 
-    title_prefix = "Rolling " if "rolling" in metric_period else "Quarterly "
+        for i, idx in enumerate(nearest_idxs):
+            date_val = series.index[idx]
+            y_val = series.iloc[idx]
+
+            # Only label if date is reasonably close to the tick
+            if abs((ticks[i] - date_val).days) < 45:
+                ax.annotate(
+                    f"{int(y_val)}",
+                    (date_val, y_val),
+                    xytext=(0, 5),
+                    textcoords="offset points",
+                    ha="center",
+                    fontsize=9,
+                )
+
     ax.set_title(f"{title_prefix}Issue Volume", fontsize=16)
     ax.set_xlabel(xlabel, fontsize=12)
     ax.set_ylabel("Count", fontsize=12)
@@ -1724,7 +1740,7 @@ def plot_longitudinal_ttr(
         print(f"No TTR data found for period: {metric_period}")
         return
 
-    # Fix for rolling data: Use report_date as it changes, whereas start_date is static
+    # Determine date column
     date_col = "report_date" if "rolling" in metric_period else "start_date"
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col)
