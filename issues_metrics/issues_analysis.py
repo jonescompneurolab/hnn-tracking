@@ -96,9 +96,9 @@ def preprocess(
 
     def assign_dev(row):
         if row in dev_usernames:
-            return "developer"
+            return "Developer"
         else:
-            return "non-developer"
+            return "Non-Developer"
 
     df["opened_by"] = df["username"].apply(lambda x: assign_dev(x))
 
@@ -724,7 +724,7 @@ def build_report_tables_from_records(
     issues_segmented = process_issues_for_ttr(df, report_date)
     ttr_issues_table = generate_ttr_table(issues_segmented)
 
-    nondev_issues = df.loc[df["opened_by"] != "developer"].reset_index(drop=True)
+    nondev_issues = df.loc[df["opened_by"] != "Developer"].reset_index(drop=True)
     if nondev_issues.empty:
         nondev_ttr_issues_table = pd.DataFrame(
             columns=["Time Window", "Percent", "Cumulative Percent"]
@@ -974,27 +974,54 @@ def build_report_tables_from_pickle(
     tables = {}
 
     for metric, group in df.groupby("metric"):
+        rename_val = group["value_type"].iloc[0]
+        rename_subval = group["sub_value_type"].iloc[0]
+        rename_indicator = group["indicator_name"].iloc[0]
+
+        rename_val = rename_val.replace("_", " ").title()
+        rename_subval = rename_subval.replace("_", " ").title()
+        rename_indicator = rename_indicator.replace("_", " ").title()
+
+        title = group["metric"].iloc[0]
+        title = title.replace("_", " ").title()
+
         # drop columns not needed for display
         table = group.drop(
             columns=[
                 "report_date",
                 "start_date",
-                "metric",
+                # "metric",
                 "value_type",
                 "sub_value_type",
                 "grant_year",
             ]
         )
+        table = table.rename(
+            columns={
+                "value": rename_val,
+                "sub_value": rename_subval,
+                "indicator_value": rename_indicator,
+            }
+        )
+
+        drops = ["NA", "Na", "indicator_name"]
+
+        for col in drops:
+            if col in table.columns:
+                table = table.drop(columns=col)
+
         tables[metric] = table.reset_index(drop=True)
 
-    if display_tables:
-        for key, table in tables.items():
+        table = table.drop(columns=["metric"])
+
+        if display_tables:
+            print(f"{title}")
             if style_displayed_tables:
                 render_html_table(table)
             else:
                 display(table)
 
-    return
+    return tables
 
 
 def run_alltime_report(
@@ -1106,7 +1133,7 @@ def run_alltime_report(
     # Generate non-developer time-to-response table
     # ------------------------------
 
-    nondev_issues = df.loc[df["opened_by"] != "developer"].reset_index(drop=True)
+    nondev_issues = df.loc[df["opened_by"] != "Developer"].reset_index(drop=True)
 
     if nondev_issues.empty:
         print("\nNo issues opened by non-developers in the specified date range.")
@@ -1141,7 +1168,7 @@ def run_alltime_report(
         )
     else:
         nondev_issues_segmented = process_issues_for_ttr(
-            df.loc[df["opened_by"] != "developer"].reset_index(drop=True),
+            df.loc[df["opened_by"] != "Developer"].reset_index(drop=True),
             report_date,
         )
         nondev_ttr_issues_table = generate_ttr_table(nondev_issues_segmented)
@@ -1442,11 +1469,14 @@ def barplot_counts(
             )
 
         ax = pivot_table.plot(kind="bar", figsize=(9, 5), width=0.8)
-        ax.set_title(f"{metric.replace('_', ' ').title()} by Grant Year", fontsize=14)
+        ax.set_title(
+            f"Issues {metric.replace('_', ' ').title()}",
+            fontsize=14,
+        )
         ax.set_xlabel("Grant Year", fontsize=12)
         ax.set_ylabel(value_col.capitalize(), fontsize=12)
         ax.grid(axis="y", linestyle="--", alpha=0.4)
-        ax.legend(title="Indicator", bbox_to_anchor=(1.05, 1), loc="upper left")
+        ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
         plt.xticks(rotation=0)
 
         # Add data labels
@@ -1488,7 +1518,7 @@ def barplot_stacked(
         if yearly_data.empty:
             continue
 
-        # Pivot to wide format
+        # Pivot to wide format (This table holds the COUNTS)
         pivot_table = yearly_data.pivot_table(
             index="grant_year",
             columns="indicator_value",
@@ -1496,7 +1526,7 @@ def barplot_stacked(
             aggfunc="first",
         ).sort_index()
 
-        # Convert to percent
+        # Convert to percent (This table holds the PERCENTS)
         pivot_table_percent = pivot_table.div(pivot_table.sum(axis=1), axis=0) * 100
 
         ax = pivot_table_percent.plot(
@@ -1508,24 +1538,27 @@ def barplot_stacked(
         ax.set_xlabel("Grant Year", fontsize=12)
         ax.set_ylabel("Percent (%)", fontsize=12)
         ax.grid(axis="y", linestyle="--", alpha=0.3)
-        ax.legend(title="Indicator", bbox_to_anchor=(1.05, 1), loc="upper left")
+        ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
         plt.xticks(rotation=0)
 
         # Add data labels
-        for i, row in enumerate(pivot_table_percent.values):
+        # Zip the percent values with the count values
+        for i, (row_pct, row_count) in enumerate(
+            zip(pivot_table_percent.values, pivot_table.values)
+        ):
             cumulative = 0
-            for j, val in enumerate(row):
-                if not pd.isna(val):
+            for j, (pct, count) in enumerate(zip(row_pct, row_count)):
+                if not pd.isna(pct) and pct > 0:
                     ax.text(
                         i,
-                        cumulative + val / 2,
-                        f"{val:.1f}%",
+                        cumulative + pct / 2,
+                        f"{pct:.1f}%\n(n={int(count)})",
                         ha="center",
                         va="center",
                         fontsize=10,
                         color="black",
                     )
-                    cumulative += val
+                    cumulative += pct
 
         plt.tight_layout()
         plt.show()
@@ -1577,7 +1610,7 @@ def lineplot_fast_response(
                 # Map to the correct count
                 indicator_value_map = {
                     "overall_time_to_respond": "Total",
-                    "nondev_time_to_respond": "non-developer",
+                    "nondev_time_to_respond": "Non-Developer",
                 }
                 count_row = counts_df[
                     (counts_df["grant_year"] == row["grant_year"])
@@ -1633,6 +1666,7 @@ def lineplot_fast_response(
 # longitudinal counts
 # -------------------------------------------
 
+
 def plot_longitudinal_counts(
     report_data,
     metric_period="monthly",  # 'monthly' or 'rolling_monthly'
@@ -1676,7 +1710,6 @@ def plot_longitudinal_counts(
     ax = pivot_table.plot(kind="line", figsize=(12, 6), linewidth=2)
 
     title_prefix = "Rolling " if "rolling" in metric_period else "Monthly "
-    xlabel = "Date"
 
     # Calculate Ticks: Start, End, Year Starts
     dates = pivot_table.index
@@ -1706,14 +1739,14 @@ def plot_longitudinal_counts(
                     xytext=(0, 5),
                     textcoords="offset points",
                     ha="center",
-                    fontsize=9,
+                    fontsize=12,
                 )
 
     ax.set_title(f"{title_prefix}Issue Volume", fontsize=16)
-    ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_xlabel("", fontsize=12)
     ax.set_ylabel("Count", fontsize=12)
     ax.grid(axis="y", linestyle="--", alpha=0.4)
-    ax.legend(title="Status")
+    ax.legend()
 
     plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
@@ -1722,7 +1755,7 @@ def plot_longitudinal_counts(
 
 def plot_longitudinal_ttr(
     report_data,
-    metric_period="monthly",  # 'monthly' or 'rolling_monthly'
+    metric_period="monthly",
     target_bin="< 02 days",
 ):
     """ """
@@ -1745,7 +1778,7 @@ def plot_longitudinal_ttr(
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col)
 
-    pivot_df = df.pivot_table(index=date_col, columns="metric", values="value")
+    pivot_df = df.pivot_table(index=date_col, columns="metric", values="value",)
 
     col_map = {
         "overall_time_to_respond": "All Issues",
@@ -1753,27 +1786,55 @@ def plot_longitudinal_ttr(
     }
     pivot_df = pivot_df.rename(columns=col_map)
 
-    # Create subplots
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(12, 10), sharex=True)
+    # Calculate Ticks: Start, End, Year Starts
+    dates = pivot_df.index
+    start_date = dates.min()
+    end_date = dates.max()
+    years = pd.date_range(start=start_date, end=end_date, freq="YS",)
+    ticks = sorted(list(set([start_date, end_date] + list(years))))
 
-    targets = ["All Issues", "Non-Dev Issues"]
-    colors = ["#1f77b4", "#ff7f0e"]  # Standard matplotlib blue/orange
+    # Create subplots
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(12, 10), sharex=True,)
+
+    targets = ["All Issues", "Non-Dev Issues",]
+    colors = ["#1f77b4", "#ff7f0e",]
 
     for i, (target, color) in enumerate(zip(targets, colors)):
         if target in pivot_df.columns:
             ax = axes[i]
+
             ax.plot(
                 pivot_df.index,
                 pivot_df[target],
-                marker="o",
+                # marker="o",
                 linewidth=2,
                 label=target,
                 color=color,
             )
 
+            # Add data labels at the ticks
+            series = pivot_df[target]
+            # Find closest indices to the ticks
+            nearest_idxs = series.index.get_indexer(ticks, method="nearest")
+
+            for tick_i, idx in enumerate(nearest_idxs):
+                date_val = series.index[idx]
+                y_val = series.iloc[idx]
+
+                # Only label if date is reasonably close to the tick
+                if abs((ticks[tick_i] - date_val).days) < 45:
+                    ax.annotate(
+                        f"{y_val:.1f}%",
+                        (date_val, y_val),
+                        xytext=(0, 10),
+                        textcoords="offset points",
+                        ha="center",
+                        fontsize=12,
+                    )
+
             ax.set_ylabel("Percent (%)", fontsize=12)
             ax.set_ylim(0, 105)
-            ax.grid(True, linestyle="--", alpha=0.4)
+            ax.grid(axis="y", linestyle="--", alpha=0.4)
             ax.legend(loc="upper left")
 
             # Only set title on top plot
@@ -1783,21 +1844,9 @@ def plot_longitudinal_ttr(
                     f"{title_prefix}Percent Responded {target_bin}", fontsize=16
                 )
 
-    # Custom x-axis ticks: Start, End, and Start of each Year
+    # Apply ticks to the bottom axis
     import matplotlib.dates as mdates
 
-    # Calculate specific ticks
-    dates = pivot_df.index
-    start_date = dates.min()
-    end_date = dates.max()
-
-    # Get all Jan 1sts in range
-    years = pd.date_range(start=start_date, end=end_date, freq="AS")
-
-    # Combine and sort unique
-    ticks = sorted(list(set([start_date, end_date] + list(years))))
-
-    # Apply to the bottom axis
     axes[-1].set_xticks(ticks)
     axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
     axes[-1].set_xlabel("Date", fontsize=12)
