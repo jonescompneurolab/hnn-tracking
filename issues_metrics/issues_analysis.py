@@ -2,6 +2,11 @@
 # Setup
 # -------------------------------------------
 
+# THINGS TO DO
+# ---------------
+# - centralize the developer list
+# - review plotting funcitons (used Gemini to create those)
+
 # issues_analysis.py
 
 import os
@@ -1443,7 +1448,6 @@ def barplot_counts(
         yearly_data = df[df["metric"] == metric].copy()
         # yearly_data = yearly_data[yearly_data["grant_year"] != "all_time"]
 
-        # replace "all_time" with "Overall"
         yearly_data["grant_year"] = yearly_data["grant_year"].replace(
             {"all_time": "Overall"}
         )
@@ -1458,7 +1462,7 @@ def barplot_counts(
             aggfunc="first",
         ).sort_index()
 
-        # order bars so that the order is new issues, closed issues, outstanding issues
+        # change bar order to: new issues, closed issues, outstanding issues
         if metric == "issues_status":
             pivot_table = pivot_table.reindex(
                 columns=[
@@ -1468,18 +1472,37 @@ def barplot_counts(
                 ]
             )
 
-        ax = pivot_table.plot(kind="bar", figsize=(9, 5), width=0.8)
+        ax = pivot_table.plot(
+            kind="bar",
+            figsize=(9, 5),
+            width=0.8,
+        )
         ax.set_title(
-            f"Issues {metric.replace('_', ' ').title()}",
+            f"{metric.replace('_', ' ').title()}",
             fontsize=14,
         )
-        ax.set_xlabel("Grant Year", fontsize=12)
-        ax.set_ylabel(value_col.capitalize(), fontsize=12)
-        ax.grid(axis="y", linestyle="--", alpha=0.4)
-        ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
-        plt.xticks(rotation=0)
+        ax.set_xlabel(
+            "",
+            fontsize=12,
+        )
+        ax.set_ylabel(
+            "Count",
+            fontsize=12,
+        )
+        ax.grid(
+            axis="y",
+            linestyle="--",
+            alpha=0.4,
+        )
+        ax.legend(
+            bbox_to_anchor=(1.05, 1),
+            loc="upper left",
+        )
+        plt.xticks(
+            rotation=0,
+        )
 
-        # Add data labels
+        # data labels
         for p in ax.patches:
             height = p.get_height()
             if not pd.isna(height):
@@ -1495,7 +1518,7 @@ def barplot_counts(
         plt.show()
 
 
-# Stacked percent bar charts for TTR metrics
+# Stacked bar charts for TTR metrics
 # ---------------------------------
 def barplot_stacked(
     report_data,
@@ -1509,7 +1532,7 @@ def barplot_stacked(
 
     for metric in metrics:
         metric_data = df[df["metric"] == metric]
-        # remove "all_time" and "Total" rows
+        # remove "all_time" and "total" rows
         yearly_data = metric_data[
             (metric_data["grant_year"] != "all_time")
             & (metric_data["indicator_value"].str.lower() != "total")
@@ -1518,7 +1541,7 @@ def barplot_stacked(
         if yearly_data.empty:
             continue
 
-        # Pivot to wide format (This table holds the COUNTS)
+        # pivot table to hold the counts
         pivot_table = yearly_data.pivot_table(
             index="grant_year",
             columns="indicator_value",
@@ -1526,28 +1549,55 @@ def barplot_stacked(
             aggfunc="first",
         ).sort_index()
 
-        # Convert to percent (This table holds the PERCENTS)
+        # table to hold percents
         pivot_table_percent = pivot_table.div(pivot_table.sum(axis=1), axis=0) * 100
 
         ax = pivot_table_percent.plot(
             kind="bar", stacked=True, figsize=(9, 5), colormap="Set2"
         )
-        ax.set_title(
-            f"{metric.replace('_', ' ').title()} by Grant Year (Percent)", fontsize=14
+
+        title_text = metric.replace(
+            "_",
+            " ",
+        ).title()
+        title_text = title_text.replace(
+            "Dev",
+            "Developer",
         )
-        ax.set_xlabel("Grant Year", fontsize=12)
-        ax.set_ylabel("Percent (%)", fontsize=12)
-        ax.grid(axis="y", linestyle="--", alpha=0.3)
-        ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+        ax.set_title(
+            f"Percent Issues {title_text}",
+            fontsize=14,
+        )
+        ax.set_xlabel(
+            "",
+            fontsize=12,
+        )
+        ax.set_ylabel(
+            "Percent",
+            fontsize=12,
+        )
+        ax.grid(
+            axis="y",
+            linestyle="--",
+            alpha=0.3,
+        )
+        ax.legend(
+            bbox_to_anchor=(1.05, 1),
+            loc="upper left",
+        )
         plt.xticks(rotation=0)
 
-        # Add data labels
-        # Zip the percent values with the count values
+        # add data labels, zipping the percents with the counts
         for i, (row_pct, row_count) in enumerate(
             zip(pivot_table_percent.values, pivot_table.values)
         ):
             cumulative = 0
-            for j, (pct, count) in enumerate(zip(row_pct, row_count)):
+            for j, (pct, count) in enumerate(
+                zip(
+                    row_pct,
+                    row_count,
+                )
+            ):
                 if not pd.isna(pct) and pct > 0:
                     ax.text(
                         i,
@@ -1576,7 +1626,7 @@ def lineplot_fast_response(
 ):
     df = report_data.copy()
 
-    # Filter to TTR metrics only
+    # filter to TTR metrics
     ttr_metrics = df[
         df["metric"].isin(
             [
@@ -1589,7 +1639,7 @@ def lineplot_fast_response(
         print("No TTR data available.")
         return
 
-    # Get counts from opened_by_dev_status
+    # get counts from opened_by_dev_status
     counts_df = df[df["metric"] == "opened_by_dev_status"]
 
     plot_data = []
@@ -1600,14 +1650,13 @@ def lineplot_fast_response(
     ):
         subset = ttr_metrics[ttr_metrics["metric"] == metric]
 
-        # keep only yearly rows
+        # keep only the specified grant_years
         subset = subset[subset["grant_year"].isin(grant_years)]
 
         for _, row in subset.iterrows():
             if row["indicator_value"] == "< 02 days":
                 percent = row["value"]
 
-                # Map to the correct count
                 indicator_value_map = {
                     "overall_time_to_respond": "Total",
                     "nondev_time_to_respond": "Non-Developer",
@@ -1630,14 +1679,18 @@ def lineplot_fast_response(
     plot_df = pd.DataFrame(plot_data)
     plot_df = plot_df.sort_values("grant_year")
 
-    # Plot
     fig, ax = plt.subplots(figsize=(8, 5))
     for group, group_df in plot_df.groupby("group"):
         x = group_df["grant_year"]
         y = group_df["percent_fast_response"]
-        ax.plot(x, y, marker="o", label=group)
+        ax.plot(
+            x,
+            y,
+            marker="o",
+            label=group,
+        )
 
-        # Add counts below points
+        # add data labels
         for xi, yi, count in zip(x, y, group_df["count"]):
             if count is not None:
                 ax.text(
@@ -1655,9 +1708,16 @@ def lineplot_fast_response(
         fontsize=14,
         pad=40,
     )
-    ax.set_ylabel("Percent (%)", fontsize=12)
+    ax.set_ylabel(
+        "Percent",
+        fontsize=12,
+    )
     ax.set_ylim(0, 100)
-    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    ax.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.3,
+    )
     ax.legend()
     plt.tight_layout()
     plt.show()
@@ -1665,33 +1725,34 @@ def lineplot_fast_response(
 
 # longitudinal counts
 # -------------------------------------------
-
-
 def plot_longitudinal_counts(
     report_data,
-    metric_period="monthly",  # 'monthly' or 'rolling_monthly'
+    metric_period="monthly",  # accepts 'monthly' or 'rolling_monthly'
     value_col="value",
 ):
     """ """
     df = report_data.copy()
 
-    # Filter for specific period and metric
+    # filter 'issue_staus' for specific period
     df = df[(df["metric_period"] == metric_period) & (df["metric"] == "issues_status")]
 
     if df.empty:
         print(f"No data found for period: {metric_period}")
         return
 
-    # Ensure value column is numeric
-    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+    # ensure value column is numeric
+    df[value_col] = pd.to_numeric(
+        df[value_col],
+        errors="coerce",
+    )
 
-    # Determine date column
-    # Use report_date for rolling so it progresses, start_date for monthly
+    # determine date column
+    # - use 'report_date' for rolling
+    # - use 'start_date' for monthly
     date_col = "report_date" if "rolling" in metric_period else "start_date"
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col)
 
-    # Pivot
     pivot_table = df.pivot_table(
         index=date_col,
         columns="indicator_value",
@@ -1699,39 +1760,46 @@ def plot_longitudinal_counts(
         aggfunc="first",
     )
 
-    # Reorder columns
     desired_order = ["New Issues", "Closed Issues", "Outstanding Issues"]
     cols = [c for c in desired_order if c in pivot_table.columns]
     pivot_table = pivot_table[cols]
 
-    # Plot Lines
     import matplotlib.dates as mdates
 
-    ax = pivot_table.plot(kind="line", figsize=(12, 6), linewidth=2)
+    ax = pivot_table.plot(
+        kind="line",
+        figsize=(12, 6),
+        linewidth=2,
+    )
 
     title_prefix = "Rolling " if "rolling" in metric_period else "Monthly "
 
-    # Calculate Ticks: Start, End, Year Starts
+    # set ticks for start, end, and each year in between
     dates = pivot_table.index
     start_date = dates.min()
     end_date = dates.max()
-    years = pd.date_range(start=start_date, end=end_date, freq="AS")
+    years = pd.date_range(
+        start=start_date,
+        end=end_date,
+        freq="YS",
+    )
     ticks = sorted(list(set([start_date, end_date] + list(years))))
 
     ax.set_xticks(ticks)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
 
-    # Add data labels at the ticks
+    # add data labels at the ticks
     for col in pivot_table.columns:
         series = pivot_table[col]
-        # Find closest indices to the ticks
+
+        # find closest indices to the ticks
         nearest_idxs = series.index.get_indexer(ticks, method="nearest")
 
         for i, idx in enumerate(nearest_idxs):
             date_val = series.index[idx]
             y_val = series.iloc[idx]
 
-            # Only label if date is reasonably close to the tick
+            # only label if date is reasonably close to the tick
             if abs((ticks[i] - date_val).days) < 45:
                 ax.annotate(
                     f"{int(y_val)}",
@@ -1742,26 +1810,42 @@ def plot_longitudinal_counts(
                     fontsize=12,
                 )
 
-    ax.set_title(f"{title_prefix}Issue Volume", fontsize=16)
-    ax.set_xlabel("", fontsize=12)
-    ax.set_ylabel("Count", fontsize=12)
-    ax.grid(axis="y", linestyle="--", alpha=0.4)
+    ax.set_title(
+        f"{title_prefix}Issue Volume",
+        fontsize=16,
+    )
+    ax.set_xlabel(
+        "",
+        fontsize=12,
+    )
+    ax.set_ylabel(
+        "Count",
+        fontsize=12,
+    )
+    ax.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.4,
+    )
     ax.legend()
 
-    plt.xticks(rotation=45, ha="right")
+    plt.xticks(
+        rotation=45,
+        ha="right",
+    )
     plt.tight_layout()
     plt.show()
 
 
 def plot_longitudinal_ttr(
     report_data,
-    metric_period="monthly",
+    metric_period="monthly",  # accepts 'monthly' or 'rolling_monthly'
     target_bin="< 02 days",
 ):
     """ """
     df = report_data.copy()
 
-    # Filter for TTR metrics and specific period
+    # filter for TTR metrics and specific period
     ttr_metrics = ["overall_time_to_respond", "nondev_time_to_respond"]
     df = df[
         (df["metric_period"] == metric_period)
@@ -1773,12 +1857,16 @@ def plot_longitudinal_ttr(
         print(f"No TTR data found for period: {metric_period}")
         return
 
-    # Determine date column
+    # determine date column based on metric_period
     date_col = "report_date" if "rolling" in metric_period else "start_date"
     df[date_col] = pd.to_datetime(df[date_col])
     df = df.sort_values(date_col)
 
-    pivot_df = df.pivot_table(index=date_col, columns="metric", values="value",)
+    pivot_df = df.pivot_table(
+        index=date_col,
+        columns="metric",
+        values="value",
+    )
 
     col_map = {
         "overall_time_to_respond": "All Issues",
@@ -1786,18 +1874,32 @@ def plot_longitudinal_ttr(
     }
     pivot_df = pivot_df.rename(columns=col_map)
 
-    # Calculate Ticks: Start, End, Year Starts
+    # set ticks for start, end, and each year in between
     dates = pivot_df.index
     start_date = dates.min()
     end_date = dates.max()
-    years = pd.date_range(start=start_date, end=end_date, freq="YS",)
+    years = pd.date_range(
+        start=start_date,
+        end=end_date,
+        freq="YS",
+    )
     ticks = sorted(list(set([start_date, end_date] + list(years))))
 
-    # Create subplots
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(12, 10), sharex=True,)
+    fig, axes = plt.subplots(
+        nrows=2,
+        ncols=1,
+        figsize=(12, 10),
+        sharex=True,
+    )
 
-    targets = ["All Issues", "Non-Dev Issues",]
-    colors = ["#1f77b4", "#ff7f0e",]
+    targets = [
+        "All Issues",
+        "Non-Dev Issues",
+    ]
+    colors = [
+        "#1f77b4",
+        "#ff7f0e",
+    ]
 
     for i, (target, color) in enumerate(zip(targets, colors)):
         if target in pivot_df.columns:
@@ -1812,16 +1914,16 @@ def plot_longitudinal_ttr(
                 color=color,
             )
 
-            # Add data labels at the ticks
+            # add data labels
             series = pivot_df[target]
-            # Find closest indices to the ticks
+            # find closest indices to the ticks
             nearest_idxs = series.index.get_indexer(ticks, method="nearest")
 
             for tick_i, idx in enumerate(nearest_idxs):
                 date_val = series.index[idx]
                 y_val = series.iloc[idx]
 
-                # Only label if date is reasonably close to the tick
+                # only add label if date is reasonably close to the tick
                 if abs((ticks[tick_i] - date_val).days) < 45:
                     ax.annotate(
                         f"{y_val:.1f}%",
@@ -1832,26 +1934,39 @@ def plot_longitudinal_ttr(
                         fontsize=12,
                     )
 
-            ax.set_ylabel("Percent (%)", fontsize=12)
+            ax.set_ylabel(
+                "Percent",
+                fontsize=12,
+            )
             ax.set_ylim(0, 105)
-            ax.grid(axis="y", linestyle="--", alpha=0.4)
+            ax.grid(
+                axis="y",
+                linestyle="--",
+                alpha=0.4,
+            )
             ax.legend(loc="upper left")
 
-            # Only set title on top plot
+            # set title on top plot only
             if i == 0:
                 title_prefix = "Rolling " if "rolling" in metric_period else "Monthly "
                 ax.set_title(
                     f"{title_prefix}Percent Responded {target_bin}", fontsize=16
                 )
 
-    # Apply ticks to the bottom axis
+    # set ticks to the bottom axis only
     import matplotlib.dates as mdates
 
     axes[-1].set_xticks(ticks)
     axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-    axes[-1].set_xlabel("Date", fontsize=12)
+    axes[-1].set_xlabel(
+        "Date",
+        fontsize=12,
+    )
 
-    plt.xticks(rotation=45, ha="right")
+    plt.xticks(
+        rotation=45,
+        ha="right",
+    )
     plt.tight_layout()
     plt.show()
 
