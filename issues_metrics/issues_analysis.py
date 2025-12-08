@@ -1213,7 +1213,7 @@ def run_monthly_report(
     start_date=False,
     end_date=False,
     save_report_data=True,
-    report_name="monthly_report.pkl",
+    report_name="monthly_issues_report.pkl",
     dev_usernames=[
         "stephanie-r-jones",
         "jasmainak",
@@ -1495,8 +1495,8 @@ def barplot_counts(
             alpha=0.4,
         )
         ax.legend(
-            bbox_to_anchor=(1.05, 1),
-            loc="upper left",
+            # bbox_to_anchor=(1.05, 1),
+            loc="upper right",
         )
         plt.xticks(
             rotation=0,
@@ -1553,7 +1553,10 @@ def barplot_stacked(
         pivot_table_percent = pivot_table.div(pivot_table.sum(axis=1), axis=0) * 100
 
         ax = pivot_table_percent.plot(
-            kind="bar", stacked=True, figsize=(9, 5), colormap="Set2"
+            kind="bar",
+            stacked=True,
+            figsize=(9, 5),
+            colormap="Set2",
         )
 
         title_text = metric.replace(
@@ -1582,14 +1585,17 @@ def barplot_stacked(
             alpha=0.3,
         )
         ax.legend(
-            bbox_to_anchor=(1.05, 1),
-            loc="upper left",
+            # bbox_to_anchor=(1.05, 1),
+            loc="lower right",
         )
         plt.xticks(rotation=0)
 
         # add data labels, zipping the percents with the counts
         for i, (row_pct, row_count) in enumerate(
-            zip(pivot_table_percent.values, pivot_table.values)
+            zip(
+                pivot_table_percent.values,
+                pivot_table.values,
+            )
         ):
             cumulative = 0
             for j, (pct, count) in enumerate(
@@ -1846,7 +1852,10 @@ def plot_longitudinal_ttr(
     df = report_data.copy()
 
     # filter for TTR metrics and specific period
-    ttr_metrics = ["overall_time_to_respond", "nondev_time_to_respond"]
+    ttr_metrics = [
+        "overall_time_to_respond",
+        "nondev_time_to_respond",
+    ]
     df = df[
         (df["metric_period"] == metric_period)
         & (df["metric"].isin(ttr_metrics))
@@ -1950,7 +1959,8 @@ def plot_longitudinal_ttr(
             if i == 0:
                 title_prefix = "Rolling " if "rolling" in metric_period else "Monthly "
                 ax.set_title(
-                    f"{title_prefix}Percent Responded {target_bin}", fontsize=16
+                    f"{title_prefix}Percent Responded {target_bin}",
+                    fontsize=16,
                 )
 
     # set ticks to the bottom axis only
@@ -2022,11 +2032,11 @@ def run_main_reports():
         dev_usernames=dev_usernames,
     )
 
-    monthly_report_data = run_monthly_report(
+    _ = run_monthly_report(
         start_date=start_date,
         end_date=end_date,
         save_report_data=True,
-        report_name="monthly_report.pkl",
+        report_name="monthly_issues_report.pkl",
         dev_usernames=dev_usernames,
     )
 
@@ -2089,7 +2099,7 @@ def run_main_reports():
     # ---------------------------------
     monthly_report_path = os.path.join(
         "issues_metrics",
-        "monthly_report.pkl",
+        "monthly_issues_report.pkl",
     )
 
     if os.path.exists(monthly_report_path):
@@ -2123,7 +2133,7 @@ def run_main_reports():
         "============================================\n"
     )
 
-    return
+    return processed_df
 
 
 # %% ----------------------------------------

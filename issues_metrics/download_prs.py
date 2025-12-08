@@ -68,7 +68,7 @@ def get_start_end_dates(
         START_DATE = df["date_opened"].max()
 
     else:
-        START_DATE = "2024-08-01"
+        START_DATE = "2019-01-01"
         START_DATE = datetime.strptime(START_DATE, "%Y-%m-%d").date()
 
     if manual_end is True:

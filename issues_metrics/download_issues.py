@@ -26,9 +26,11 @@ if not GITHUB_TOKEN:
     print("Error: GITHUB_TOKEN environment variable is not set.")
     sys.exit(1)
 
+
 def get_start_end_dates(
     df,
     rerun_all=False,
+    manual_start=False,
     manual_end=False,
 ):
     """
@@ -49,27 +51,20 @@ def get_start_end_dates(
         )
 
     if not rerun_all:
-        # ------- TODO ------- #
-        # -------------------- #
-        # This is just placeholder code for now
-        #
-        # Below, I'm using the most recently "opened" issue in
-        # the historical data as the start date, though this
-        # is not what we actually want to do in practice, as
-        # issues will continue to accrue activity over time
-        # and their status may change, which we need to keep
-        # track of.
-        #
-        # We would ideally want to make the starting point
-        # the oldest "unresolved" issue, which we would need
-        # some logic from the analysis script to figure out
-        START_DATE = df["date_opened"].max()
+        if manual_start:
+            START_DATE = datetime.strptime(manual_start, "%Y-%m-%d").date()
+        else:
+            # get earliest unresolved issue date
+            unresolved_issues = df.loc[df["is_resolved"] == False]  # noqa: E712
+            if not unresolved_issues.empty:
+                oldest_unresolved = unresolved_issues["date_opened"].min()
+                START_DATE = oldest_unresolved
 
     else:
-        START_DATE = "2024-08-01"
+        START_DATE = "2019-01-01"
         START_DATE = datetime.strptime(START_DATE, "%Y-%m-%d").date()
 
-    if manual_end is True:
+    if manual_end:
         END_DATE = datetime.strptime(manual_end, "%Y-%m-%d").date()
     else:
         # Since the GitHub Action will be run on the first of
@@ -115,8 +110,7 @@ def get_issues(START_DATE, END_DATE):
             if "pull_request" in issue:
                 continue
             created = datetime.strptime(
-                issue["created_at"],
-                "%Y-%m-%dT%H:%M:%SZ"
+                issue["created_at"], "%Y-%m-%dT%H:%M:%SZ"
             ).date()
             if START_DATE <= created <= END_DATE:
                 issues.append(
@@ -129,7 +123,8 @@ def get_issues(START_DATE, END_DATE):
                         "comments_url": issue["comments_url"],
                         "closed_at": issue.get("closed_at"),
                         "closed_by": issue.get("closed_by", {}).get("login")
-                        if issue.get("closed_by") else "",
+                        if issue.get("closed_by")
+                        else "",
                         "labels": [label["name"] for label in issue.get("labels", [])],
                         "milestone": issue.get("milestone", {}).get("title")
                         if issue.get("milestone")
@@ -169,11 +164,11 @@ def get_comments(
 
 
 def get_issues_with_comments(
-        rerun_all=False,
-        max_comments=5,
-        manual_end=False,
+    rerun_all=False,
+    max_comments=5,
+    manual_start=False,
+    manual_end=False,
 ):
-
     if rerun_all:
         print(
             "The 'rerun_all' flag is enabled. All historical data \n"
@@ -191,6 +186,7 @@ def get_issues_with_comments(
     START_DATE, END_DATE = get_start_end_dates(
         hist_issues_data,
         rerun_all=rerun_all,
+        manual_start=manual_start,
         manual_end=manual_end,
     )
 
@@ -259,9 +255,16 @@ def get_issues_with_comments(
         columns=columns,
     )
 
-    df["date_opened"] = pd.to_datetime(
-        df["date_time"]
-    ).dt.date
+    df["date_opened"] = pd.to_datetime(df["date_time"]).dt.date
+
+    # identify and mark resolved issues
+    df["is_resolved"] = False
+    df["date_closed_copy"] = pd.to_datetime(df["date_closed"])
+    df.loc[~df["date_closed_copy"].isna(), "is_resolved"] = True
+    df.drop(
+        columns=["date_closed_copy"],
+        inplace=True,
+    )
 
     print(f"Fetched and updated {len(df['number'].unique())} unique issues.")
 
@@ -289,17 +292,19 @@ def get_issues_with_comments(
 # %% ----------------------------------------
 
 if __name__ == "__main__":
-
+    manual_start = False
     manual_end = False
 
     # --> [DEV]
     if "dylandaniels" in os.getcwd():
+        manual_start = "2023-08-01"  # U24 start date
         manual_end = "2025-12-01"
     # --> [END DEV]
 
     issues_data = get_issues_with_comments(
-        rerun_all=True,
+        rerun_all=False,
         max_comments=5,
+        manual_start=manual_start,
         manual_end=manual_end,
     )
 
