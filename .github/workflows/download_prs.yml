@@ -1,0 +1,50 @@
+name: Monthly PR Report
+
+on:
+  push:
+    branches:
+      - issue_metrics
+  schedule:
+    # 08:00 AM Eastern year round
+    - cron: "0 13 1 * *"
+  workflow_dispatch:
+
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install pandas requests pandas_market_calendars ipython
+
+      - name: Download PR data and run analysis script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python issues_metrics/run_reports.py
+
+      - name: Commit updated data
+        run: |
+          MONTH_YEAR=$(date +"%B %Y")
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add issues_metrics/raw_prs_data.pkl
+          git add issues_metrics/prs_report.pkl
+          git commit -m "Monthly PR data upload for $MONTH_YEAR" \
+            || echo "No changes to commit"
+          git push
